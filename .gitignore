@@ -1,0 +1,11 @@
+config.yaml
+.env
+.env.*
+node_modules/
+dist/
+*.tsbuildinfo
+target/
+__pycache__/
+*.pyc
+.venv/
+static/assets/

@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mz-http Explorer</title>
+<style>
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+  --green: #3fb950; --red: #f85149; --yellow: #d29922;
+  --orange: #db6d28; --purple: #bc8cff;
+  --font: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; display: flex; height: 100vh; overflow: hidden; }
+
+/* ── sidebar ── */
+.sidebar {
+  width: 240px; min-width: 240px; background: var(--surface);
+  border-right: 1px solid var(--border); display: flex; flex-direction: column;
+}
+.sidebar-header {
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  font-size: 14px; font-weight: 600;
+}
+.sidebar-header small { display: block; color: var(--dim); font-size: 11px; font-weight: 400; margin-top: 2px; }
+.view-list { flex: 1; overflow-y: auto; }
+.view-item {
+  padding: 10px 16px; cursor: pointer; border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.view-item:hover { background: rgba(88,166,255,0.06); }
+.view-item.active { background: rgba(88,166,255,0.12); border-left: 3px solid var(--accent); }
+.view-item .name { font-weight: 600; }
+.view-item .meta { font-size: 11px; color: var(--dim); margin-top: 2px; }
+.view-item .badge {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 10px; font-weight: 600;
+}
+.badge-ok { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge-wait { background: rgba(210,153,34,0.15); color: var(--yellow); }
+
+/* ── main ── */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* toolbar */
+.toolbar {
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  background: var(--surface);
+}
+.toolbar input {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 5px 10px; font-size: 12px; font-family: var(--font);
+  flex: 1; min-width: 200px;
+}
+.toolbar .info { font-size: 11px; color: var(--dim); }
+button {
+  background: var(--border); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+  font-family: var(--font); transition: background 0.15s; white-space: nowrap;
+}
+button:hover { background: #3d444d; }
+button.primary { background: rgba(88,166,255,0.15); border-color: var(--accent); color: var(--accent); }
+button.live { background: rgba(63,185,80,0.15); border-color: var(--green); color: var(--green); }
+button.live.active { background: var(--green); color: var(--bg); }
+
+/* content area: split between table and detail */
+.content { flex: 1; display: flex; overflow: hidden; }
+
+/* table pane */
+.table-pane { flex: 1; overflow: auto; }
+table { width: 100%; border-collapse: collapse; }
+thead { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+th {
+  text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border);
+  color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase;
+  cursor: pointer; user-select: none;
+}
+th:hover { color: var(--text); }
+th.sorted { color: var(--accent); }
+td {
+  padding: 6px 12px; border-bottom: 1px solid var(--border);
+  font-size: 12px; max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+tr { cursor: pointer; transition: background 0.1s; }
+tr:hover { background: rgba(88,166,255,0.04); }
+tr.selected { background: rgba(88,166,255,0.1); }
+tr.flash { animation: rowflash 1s ease-out; }
+@keyframes rowflash { from { background: rgba(63,185,80,0.2); } }
+td.key-col { color: var(--accent); font-weight: 600; }
+td.val-preview { color: var(--dim); }
+
+/* detail pane */
+.detail-pane {
+  width: 380px; min-width: 380px; border-left: 1px solid var(--border);
+  background: var(--surface); display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.detail-header {
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.detail-header .key { font-weight: 600; color: var(--accent); font-size: 14px; }
+.detail-body {
+  flex: 1; overflow: auto; padding: 16px;
+}
+.detail-body pre {
+  font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+  word-break: break-all;
+}
+.detail-empty {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  color: var(--dim); font-size: 12px;
+}
+
+/* live indicator */
+.live-dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+  margin-right: 4px; vertical-align: middle;
+}
+.live-dot.on { background: var(--green); animation: pulse 2s infinite; }
+.live-dot.off { background: var(--dim); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* pagination */
+.pagination {
+  padding: 8px 16px; border-top: 1px solid var(--border); background: var(--surface);
+  display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--dim);
+}
+
+/* empty state */
+.empty-state {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; color: var(--dim); gap: 8px;
+}
+.empty-state .big { font-size: 16px; color: var(--text); }
+</style>
+</head>
+<body>
+
+<!-- ═══════ SIDEBAR ═══════ -->
+<div class="sidebar">
+  <div class="sidebar-header">
+    mz-http Explorer
+    <small id="health-status">connecting...</small>
+  </div>
+  <div class="view-list" id="view-list"></div>
+</div>
+
+<!-- ═══════ MAIN ═══════ -->
+<div class="main">
+  <!-- toolbar -->
+  <div class="toolbar" id="toolbar" style="display:none">
+    <input type="text" id="search" placeholder="Search keys and values..." oninput="onSearch()">
+    <button onclick="loadData()" class="primary">Refresh</button>
+    <button id="live-btn" onclick="toggleLive()" class="live">
+      <span class="live-dot off" id="live-dot"></span> Live
+    </button>
+    <span class="info" id="toolbar-info"></span>
+  </div>
+
+  <!-- content -->
+  <div class="content">
+    <div class="table-pane" id="table-pane">
+      <div class="empty-state" id="empty-state">
+        <div class="big">Select a view</div>
+        <div>Choose a view from the sidebar to explore its data.</div>
+      </div>
+      <table id="data-table" style="display:none">
+        <thead>
+          <tr>
+            <th class="sorted" onclick="setSort('key')">Key <span id="sort-key-arrow">&#9650;</span></th>
+            <th onclick="setSort('value')">Value <span id="sort-value-arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="data-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- detail -->
+    <div class="detail-pane" id="detail-pane" style="display:none">
+      <div class="detail-header">
+        <span class="key" id="detail-key"></span>
+        <button onclick="closeDetail()" style="padding:2px 8px;font-size:11px">X</button>
+      </div>
+      <div class="detail-body">
+        <pre id="detail-json"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- pagination -->
+  <div class="pagination" id="pagination" style="display:none">
+    <button onclick="prevPage()" id="prev-btn">Prev</button>
+    <span id="page-info"></span>
+    <button onclick="nextPage()" id="next-btn">Next</button>
+    <span style="flex:1"></span>
+    <span id="total-info"></span>
+  </div>
+</div>
+
+<script>
+const API = '';
+const PAGE_SIZE = 50;
+let currentView = null;
+let currentOffset = 0;
+let currentSort = 'key';
+let searchQuery = '';
+let selectedKey = null;
+let ws = null;
+let liveChanges = new Map(); // key -> timestamp of last change
+
+// ── Health ──────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch(API + '/health');
+    const ok = r.ok && (await r.text()) === 'ok';
+    document.getElementById('health-status').textContent = ok ? 'connected' : 'error';
+    document.getElementById('health-status').style.color = ok ? 'var(--green)' : 'var(--red)';
+  } catch {
+    document.getElementById('health-status').textContent = 'unreachable';
+    document.getElementById('health-status').style.color = 'var(--red)';
+  }
+}
+
+// ── Views ───────────────────────────────────────────
+async function fetchViews() {
+  try {
+    const r = await fetch(API + '/api/views');
+    const views = await r.json();
+    const list = document.getElementById('view-list');
+    list.innerHTML = views.map(v => `
+      <div class="view-item ${currentView === v.name ? 'active' : ''}"
+           onclick="selectView('${esc(v.name)}')">
+        <div class="name">${esc(v.name)}</div>
+        <div class="meta">
+          ${v.keys} keys
+          <span class="badge ${v.hydrated ? 'badge-ok' : 'badge-wait'}">
+            ${v.hydrated ? 'hydrated' : 'loading'}
+          </span>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('fetchViews', e);
+  }
+}
+
+function selectView(name) {
+  if (currentView === name) return;
+  currentView = name;
+  currentOffset = 0;
+  selectedKey = null;
+  searchQuery = '';
+  document.getElementById('search').value = '';
+  disconnectLive();
+  fetchViews(); // re-render sidebar active state
+  loadData();
+}
+
+// ── Data ────────────────────────────────────────────
+async function loadData() {
+  if (!currentView) return;
+
+  document.getElementById('toolbar').style.display = 'flex';
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('data-table').style.display = 'table';
+  document.getElementById('pagination').style.display = 'flex';
+
+  const params = new URLSearchParams({
+    limit: PAGE_SIZE,
+    offset: currentOffset,
+    sort: currentSort,
+  });
+  if (searchQuery) params.set('q', searchQuery);
+
+  try {
+    const r = await fetch(API + '/api/views/' + encodeURIComponent(currentView) + '/list?' + params);
+    if (!r.ok) {
+      document.getElementById('data-tbody').innerHTML =
+        `<tr><td colspan="2" style="color:var(--dim)">${r.status} — view not ready</td></tr>`;
+      return;
+    }
+    const data = await r.json();
+    renderTable(data);
+    renderPagination(data);
+    document.getElementById('toolbar-info').textContent =
+      `ts: ${data.progress_timestamp}`;
+  } catch (e) {
+    console.error('loadData', e);
+  }
+}
+
+function renderTable(data) {
+  const tbody = document.getElementById('data-tbody');
+  if (data.items.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="2" style="color:var(--dim)">${
+      searchQuery ? 'No matches.' : 'No data yet.'
+    }</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = data.items.map(item => {
+    const k = item.key;
+    const preview = typeof item.value === 'object'
+      ? truncate(JSON.stringify(item.value), 120)
+      : truncate(String(item.value), 120);
+    const sel = selectedKey === k ? ' selected' : '';
+    const flash = liveChanges.has(k) && (Date.now() - liveChanges.get(k) < 2000) ? ' flash' : '';
+    return `<tr class="${sel}${flash}" onclick="selectKey('${escAttr(k)}')" data-key="${escAttr(k)}">
+      <td class="key-col">${esc(k)}</td>
+      <td class="val-preview">${esc(preview)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderPagination(data) {
+  const start = data.offset + 1;
+  const end = data.offset + data.count;
+  document.getElementById('page-info').textContent =
+    data.total > 0 ? `${start}-${end} of ${data.total}` : '0 items';
+  document.getElementById('prev-btn').disabled = data.offset === 0;
+  document.getElementById('next-btn').disabled = data.offset + data.count >= data.total;
+  document.getElementById('total-info').textContent =
+    searchQuery ? `filtered from ${currentView}` : '';
+}
+
+function prevPage() {
+  currentOffset = Math.max(0, currentOffset - PAGE_SIZE);
+  loadData();
+}
+function nextPage() {
+  currentOffset += PAGE_SIZE;
+  loadData();
+}
+
+// ── Sort ────────────────────────────────────────────
+function setSort(col) {
+  currentSort = col;
+  currentOffset = 0;
+  document.getElementById('sort-key-arrow').textContent = col === 'key' ? '\u25B2' : '';
+  document.getElementById('sort-value-arrow').textContent = col === 'value' ? '\u25B2' : '';
+  document.querySelectorAll('th').forEach(th => th.classList.remove('sorted'));
+  event.target.closest('th').classList.add('sorted');
+  loadData();
+}
+
+// ── Search ──────────────────────────────────────────
+let searchTimeout = null;
+function onSearch() {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => {
+    searchQuery = document.getElementById('search').value.trim();
+    currentOffset = 0;
+    loadData();
+  }, 250);
+}
+
+// ── Detail ──────────────────────────────────────────
+async function selectKey(key) {
+  selectedKey = key;
+  document.querySelectorAll('tr.selected').forEach(r => r.classList.remove('selected'));
+  const row = document.querySelector(`tr[data-key="${CSS.escape(key)}"]`);
+  if (row) row.classList.add('selected');
+
+  const pane = document.getElementById('detail-pane');
+  pane.style.display = 'flex';
+  document.getElementById('detail-key').textContent = key;
+
+  try {
+    const r = await fetch(API + '/api/views/' + encodeURIComponent(currentView) + '/' + encodeURIComponent(key));
+    if (!r.ok) {
+      document.getElementById('detail-json').textContent = r.status + ' Not Found';
+      return;
+    }
+    const data = await r.json();
+    document.getElementById('detail-json').textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    document.getElementById('detail-json').textContent = 'Error: ' + e.message;
+  }
+}
+
+function closeDetail() {
+  selectedKey = null;
+  document.getElementById('detail-pane').style.display = 'none';
+  document.querySelectorAll('tr.selected').forEach(r => r.classList.remove('selected'));
+}
+
+// ── Live updates via WebSocket ──────────────────────
+function toggleLive() {
+  if (ws) { disconnectLive(); return; }
+  if (!currentView) return;
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/api/ws/' + encodeURIComponent(currentView));
+
+  document.getElementById('live-dot').className = 'live-dot on';
+  document.getElementById('live-btn').classList.add('active');
+
+  ws.onopen = () => {};
+  ws.onclose = () => { disconnectLive(); };
+  ws.onerror = () => { disconnectLive(); };
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'upsert' || msg.type === 'delete') {
+        liveChanges.set(msg.key, Date.now());
+        // Refresh table to show change
+        loadData();
+        // If detail pane shows this key, refresh it
+        if (selectedKey === msg.key) {
+          if (msg.type === 'delete') {
+            document.getElementById('detail-json').textContent = '(deleted)';
+          } else {
+            selectKey(msg.key);
+          }
+        }
+      }
+    } catch {}
+  };
+}
+
+function disconnectLive() {
+  if (ws) { ws.close(); ws = null; }
+  document.getElementById('live-dot').className = 'live-dot off';
+  document.getElementById('live-btn').classList.remove('active');
+}
+
+// ── Util ────────────────────────────────────────────
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
+}
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n) + '...' : s;
+}
+
+// ── Boot ────────────────────────────────────────────
+checkHealth();
+fetchViews();
+setInterval(checkHealth, 5000);
+setInterval(fetchViews, 5000);
+
+// Clean up stale flash highlights
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, t] of liveChanges) {
+    if (now - t > 3000) liveChanges.delete(k);
+  }
+}, 1000);
+</script>
+</body>
+</html>

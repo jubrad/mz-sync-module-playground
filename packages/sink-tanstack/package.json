@@ -1,0 +1,30 @@
+{
+  "name": "@mz-web/sink-tanstack",
+  "version": "0.1.0",
+  "description": "TanStack DB sink for @mz-web/subscribe — maps Materialize batches to TanStack DB collection syncs",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@mz-web/subscribe": "file:../subscribe"
+  },
+  "peerDependencies": {
+    "@tanstack/db": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

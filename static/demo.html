@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mz-http Demo</title>
+<style>
+:root {
+  --bg: #f8f9fa; --surface: #ffffff; --border: #dee2e6;
+  --text: #212529; --dim: #868e96; --accent: #1971c2;
+  --green: #2b8a3e; --red: #c92a2a; --yellow: #e67700;
+  --orange: #d9480f; --purple: #7048e8;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+h1 { font-size: 22px; font-weight: 700; margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
+h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); }
+h1 .dot.ok { background: var(--green); }
+h1 .dot.err { background: var(--red); }
+h2 { font-size: 13px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 20px; overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.panel.full { grid-column: 1 / -1; }
+.badge {
+  display: inline-block; padding: 3px 10px; border-radius: 5px;
+  font-size: 11px; font-weight: 600;
+}
+.badge.ok { background: #d3f9d8; color: var(--green); }
+.badge.warn { background: #fff3bf; color: var(--yellow); }
+.badge.err { background: #ffe3e3; color: var(--red); }
+.badge.info { background: #d0ebff; color: var(--accent); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+td { font-size: 13px; }
+button {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 7px; padding: 7px 16px; font-size: 13px; cursor: pointer;
+  font-family: var(--font); transition: all 0.15s; font-weight: 500;
+}
+button:hover { background: var(--bg); border-color: #adb5bd; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: #1864ab; }
+button.danger { background: #fff5f5; border-color: var(--red); color: var(--red); }
+button.danger:hover { background: #ffe3e3; }
+input, select {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 12px; font-size: 13px; font-family: var(--font);
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(25,113,194,0.1); }
+.log {
+  height: 300px; overflow-y: auto; font-size: 12px;
+  background: var(--bg); border-radius: 8px; padding: 12px;
+  border: 1px solid var(--border); font-family: var(--mono);
+}
+.log-entry { padding: 4px 0; border-bottom: 1px solid #eee; }
+.log-entry:last-child { border-bottom: none; }
+.log-entry .ts { color: var(--dim); margin-right: 8px; }
+.log-entry .ev { font-weight: 700; margin-right: 6px; }
+.log-entry .ev.upsert { color: var(--green); }
+.log-entry .ev.delete { color: var(--red); }
+.log-entry .ev.progress { color: var(--purple); }
+.endpoint { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+.endpoint code { color: var(--accent); background: #e7f5ff; padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 11px; }
+.flex { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.mt { margin-top: 12px; }
+.mb { margin-bottom: 12px; }
+.pill {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; font-family: var(--mono);
+}
+.pill.get { background: #d3f9d8; color: var(--green); }
+.pill.post { background: #fff3bf; color: var(--yellow); }
+.pill.del { background: #ffe3e3; color: var(--red); }
+.pill.sse { background: #e5dbff; color: var(--purple); }
+.pill.ws { background: #ffe8cc; color: var(--orange); }
+/* view selector rows */
+tr.view-row { cursor: pointer; transition: background 0.15s; }
+tr.view-row:hover { background: #f1f3f5; }
+tr.view-row.active { background: #e7f5ff; }
+/* data table */
+.data-table-wrap { max-height: 500px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.data-table-wrap table { margin: 0; }
+.data-table-wrap thead { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.data-table-wrap td { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+td.key-col { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>
+  <span class="dot" id="health-dot"></span>
+  mz-http Demo Dashboard
+  <span style="color:var(--dim);font-size:12px;font-weight:400" id="health-text">connecting...</span>
+</h1>
+
+<div class="grid">
+
+  <!-- ═══════ VIEWS LIST (selector) ═══════ -->
+  <div class="panel">
+    <h2>Views</h2>
+    <div class="endpoint"><span class="pill get">GET</span> <code>/api/views</code> — click a row to select</div>
+    <table>
+      <thead><tr><th>Name</th><th>Keys</th><th>Hydrated</th><th>Freshness</th></tr></thead>
+      <tbody id="views-tbody"></tbody>
+    </table>
+    <div class="mt flex">
+      <span style="color:var(--dim);font-size:11px" id="views-ts"></span>
+    </div>
+  </div>
+
+  <!-- ═══════ SINGLE KEY LOOKUP ═══════ -->
+  <div class="panel">
+    <h2>Key Lookup</h2>
+    <div class="endpoint"><span class="pill get">GET</span> <code>/api/views/{name}/{key}</code></div>
+    <div class="flex mb">
+      <input id="lookup-key" placeholder="key" style="width:120px">
+      <button onclick="doLookup()" class="primary">Fetch</button>
+    </div>
+    <pre id="lookup-result" style="max-height:180px;overflow:auto;background:var(--bg);padding:8px;border-radius:4px;font-size:11px;color:var(--dim);border:1px solid var(--border);">Select a view, enter a key, then click Fetch.</pre>
+  </div>
+
+  <!-- ═══════ SSE STREAM ═══════ -->
+  <div class="panel">
+    <h2>SSE Live Stream</h2>
+    <div class="endpoint"><span class="pill sse">SSE</span> <code>/api/sse/{name}?snapshot=true</code></div>
+    <div class="flex mb">
+      <button id="sse-btn" onclick="toggleSSE()" class="primary">Connect</button>
+      <span id="sse-status" style="font-size:11px;color:var(--dim)">disconnected</span>
+      <span style="flex:1"></span>
+      <label style="font-size:11px;color:var(--dim);cursor:pointer"><input type="checkbox" id="sse-show-progress" style="vertical-align:middle"> Progress</label>
+      <span style="font-size:11px;color:var(--dim)">Events: <strong id="sse-count">0</strong></span>
+    </div>
+    <div class="log" id="sse-log"></div>
+  </div>
+
+  <!-- ═══════ WEBSOCKET STREAM ═══════ -->
+  <div class="panel">
+    <h2>WebSocket Live Stream</h2>
+    <div class="endpoint"><span class="pill ws">WS</span> <code>/api/ws/{name}?snapshot=true</code></div>
+    <div class="flex mb">
+      <button id="ws-btn" onclick="toggleWS()" class="primary">Connect</button>
+      <span id="ws-status" style="font-size:11px;color:var(--dim)">disconnected</span>
+      <span style="flex:1"></span>
+      <label style="font-size:11px;color:var(--dim);cursor:pointer"><input type="checkbox" id="ws-show-progress" style="vertical-align:middle"> Progress</label>
+      <span style="font-size:11px;color:var(--dim)">Messages: <strong id="ws-count">0</strong></span>
+    </div>
+    <div class="log" id="ws-log"></div>
+  </div>
+
+  <!-- ═══════ WEBHOOKS ═══════ -->
+  <div class="panel">
+    <h2>Webhooks</h2>
+    <div class="endpoint">
+      <span class="pill post">POST</span> <code>/api/webhooks</code>
+      &nbsp;<span class="pill get">GET</span> <code>/api/webhooks</code>
+      &nbsp;<span class="pill del">DEL</span> <code>/api/webhooks/{id}</code>
+    </div>
+    <div class="flex mb">
+      <button onclick="registerTestWebhook()" class="primary">Register Echo Webhook</button>
+      <button onclick="fetchWebhooks()">Refresh</button>
+    </div>
+    <table>
+      <thead><tr><th>ID (short)</th><th>URL</th><th>Views</th><th></th></tr></thead>
+      <tbody id="wh-tbody"></tbody>
+    </table>
+    <div id="wh-empty" style="color:var(--dim);font-size:11px;padding:8px 0">No webhooks registered.</div>
+  </div>
+
+  <!-- ═══════ WEBHOOK TEST LOG ═══════ -->
+  <div class="panel">
+    <h2>Webhook Echo Log</h2>
+    <div class="endpoint"><span class="pill post">POST</span> <code>/api/webhook-test</code> (received payloads)</div>
+    <div class="flex mb">
+      <button onclick="fetchWebhookLog()">Refresh</button>
+      <button onclick="clearWebhookLog()" class="danger">Clear</button>
+      <span style="color:var(--dim);font-size:11px" id="wh-log-count"></span>
+    </div>
+    <div class="log" id="wh-log"></div>
+  </div>
+
+  <!-- ═══════ VIEW DATA (table, full width, bottom) ═══════ -->
+  <div class="panel full">
+    <h2>View Data</h2>
+    <div class="endpoint"><span class="pill get">GET</span> <code>/api/views/{name}</code></div>
+    <div class="flex mb">
+      <button onclick="fetchViewData()" class="primary">Refresh</button>
+      <span style="color:var(--dim);font-size:11px" id="data-ts"></span>
+    </div>
+    <div class="data-table-wrap" id="data-wrap">
+      <table id="data-table">
+        <thead id="data-thead"></thead>
+        <tbody id="data-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = '';
+
+// ── Global selected view ────────────────────────────
+let selectedView = null;
+let titleColumnsMap = {}; // view name -> [col names]
+
+function selectView(name) {
+  if (selectedView === name) return;
+  const sseWasActive = !!sse;
+  const wsWasActive = !!ws;
+  selectedView = name;
+
+  // Disconnect and reconnect streams to the new view
+  disconnectSSE();
+  disconnectWS();
+
+  renderViewRows();
+  fetchViewData();
+
+  // Clear and reset key lookup
+  document.getElementById('lookup-key').value = '';
+  document.getElementById('lookup-result').textContent = 'Select a key or click a stream entry.';
+  document.getElementById('lookup-result').style.color = 'var(--dim)';
+
+  // Reconnect streams if they were active
+  if (sseWasActive) toggleSSE();
+  if (wsWasActive) toggleWS();
+}
+
+// ── Health ──────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch(API + '/health');
+    const ok = r.ok && (await r.text()) === 'ok';
+    document.getElementById('health-dot').className = 'dot ' + (ok ? 'ok' : 'err');
+    document.getElementById('health-text').textContent = ok ? 'healthy' : 'unhealthy';
+  } catch {
+    document.getElementById('health-dot').className = 'dot err';
+    document.getElementById('health-text').textContent = 'unreachable';
+  }
+}
+
+// ── Views ───────────────────────────────────────────
+let viewList = [];
+let serverTimeMs = 0;
+let lastQueryLatencyMs = 0;
+
+async function fetchViews() {
+  try {
+    const t0 = performance.now();
+    const r = await fetch(API + '/api/views');
+    lastQueryLatencyMs = performance.now() - t0;
+    const body = await r.json();
+    serverTimeMs = body.server_time_ms || 0;
+    viewList = body.views || body; // handle both old and new response shape
+    // Cache title columns per view
+    for (const v of viewList) {
+      titleColumnsMap[v.name] = v.title_columns || [];
+    }
+    // Auto-select first view
+    if (!selectedView && viewList.length) {
+      selectedView = viewList[0].name;
+      fetchViewData();
+    }
+    renderViewRows();
+    document.getElementById('views-ts').textContent =
+      `latency ${lastQueryLatencyMs.toFixed(0)}ms · updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    console.error('fetchViews', e);
+  }
+}
+
+function formatFreshness(progressTs) {
+  if (!progressTs || !serverTimeMs) return '—';
+  const ms = serverTimeMs - progressTs;
+  if (ms < 0) return '0ms';
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  return (ms / 60000).toFixed(1) + 'm';
+}
+
+function freshnessColor(progressTs) {
+  if (!progressTs || !serverTimeMs) return 'var(--dim)';
+  const ms = serverTimeMs - progressTs;
+  if (ms < 2000) return 'var(--green)';
+  if (ms < 10000) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function renderViewRows() {
+  const tbody = document.getElementById('views-tbody');
+  tbody.innerHTML = viewList.map(v => {
+    const fresh = formatFreshness(v.progress_timestamp);
+    const fc = freshnessColor(v.progress_timestamp);
+    return `
+    <tr class="view-row ${selectedView === v.name ? 'active' : ''}" onclick="selectView('${escAttr(v.name)}')">
+      <td><strong>${esc(v.name)}</strong></td>
+      <td>${v.keys}</td>
+      <td>${v.hydrated ? '<span class="badge ok">yes</span>' : '<span class="badge warn">no</span>'}</td>
+      <td style="color:${fc};font-weight:600">${fresh}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── View Data (table) ───────────────────────────────
+async function fetchViewData() {
+  if (!selectedView) return;
+  const thead = document.getElementById('data-thead');
+  const tbody = document.getElementById('data-tbody');
+  try {
+    const t0 = performance.now();
+    const r = await fetch(API + '/api/views/' + encodeURIComponent(selectedView));
+    const dataLatency = performance.now() - t0;
+    if (!r.ok) {
+      thead.innerHTML = '';
+      tbody.innerHTML = `<tr><td style="color:var(--dim)">${r.status} ${r.statusText} — view may not be hydrated yet.</td></tr>`;
+      document.getElementById('data-ts').textContent = '';
+      return;
+    }
+    const data = await r.json();
+    const entries = Object.entries(data).sort(([a],[b]) => a.localeCompare(b, undefined, {numeric:true}));
+
+    if (entries.length === 0) {
+      thead.innerHTML = '';
+      tbody.innerHTML = '<tr><td style="color:var(--dim)">No data yet.</td></tr>';
+      document.getElementById('data-ts').textContent = '';
+      return;
+    }
+
+    // Discover value columns from first entry
+    const firstVal = entries[0][1];
+    const isObj = firstVal && typeof firstVal === 'object' && !Array.isArray(firstVal);
+    const valCols = isObj ? Object.keys(firstVal) : ['value'];
+
+    thead.innerHTML = '<tr><th>Key</th>' + valCols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>';
+    tbody.innerHTML = entries.map(([k, v]) => {
+      let cells;
+      if (isObj) {
+        cells = valCols.map(c => `<td>${esc(String(v[c] ?? ''))}</td>`).join('');
+      } else {
+        cells = `<td>${esc(String(v))}</td>`;
+      }
+      return `<tr><td class="key-col">${esc(k)}</td>${cells}</tr>`;
+    }).join('');
+    document.getElementById('data-ts').textContent =
+      `${entries.length} rows · ${dataLatency.toFixed(0)}ms · ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    thead.innerHTML = '';
+    tbody.innerHTML = `<tr><td style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+// ── Single Key Lookup ────────────────────────────────
+async function doLookup() {
+  const key = document.getElementById('lookup-key').value.trim();
+  const out = document.getElementById('lookup-result');
+  if (!selectedView) { out.textContent = 'Select a view first.'; return; }
+  if (!key) { out.textContent = 'Enter a key.'; return; }
+  try {
+    const r = await fetch(API + '/api/views/' + encodeURIComponent(selectedView) + '/' + encodeURIComponent(key));
+    if (!r.ok) { out.textContent = r.status + ' ' + r.statusText; out.style.color = 'var(--dim)'; return; }
+    const data = await r.json();
+    out.textContent = JSON.stringify(data, null, 2);
+    out.style.color = 'var(--text)';
+  } catch (e) {
+    out.textContent = 'Error: ' + e.message;
+    out.style.color = 'var(--red)';
+  }
+}
+
+// ── SSE ──────────────────────────────────────────────
+let sse = null;
+let sseCount = 0;
+
+function toggleSSE() {
+  if (sse) { disconnectSSE(); return; }
+  if (!selectedView) return;
+  sseCount = 0;
+  document.getElementById('sse-count').textContent = '0';
+  document.getElementById('sse-log').innerHTML = '';
+
+  sse = new EventSource(API + '/api/sse/' + encodeURIComponent(selectedView) + '?snapshot=true');
+  document.getElementById('sse-status').textContent = 'connecting...';
+  document.getElementById('sse-status').style.color = 'var(--yellow)';
+  document.getElementById('sse-btn').textContent = 'Disconnect';
+
+  sse.onopen = () => {
+    document.getElementById('sse-status').textContent = 'connected';
+    document.getElementById('sse-status').style.color = 'var(--green)';
+  };
+  sse.onerror = () => {
+    document.getElementById('sse-status').textContent = 'error/reconnecting';
+    document.getElementById('sse-status').style.color = 'var(--red)';
+  };
+
+  for (const evType of ['upsert', 'delete', 'progress', 'snapshot_complete', 'catchup_complete']) {
+    sse.addEventListener(evType, (e) => {
+      if (evType !== 'progress') { sseCount++; document.getElementById('sse-count').textContent = sseCount; }
+      if (evType === 'progress' && !document.getElementById('sse-show-progress').checked) return;
+      appendLog('sse-log', evType, e.data);
+    });
+  }
+}
+
+function disconnectSSE() {
+  if (sse) { sse.close(); sse = null; }
+  document.getElementById('sse-status').textContent = 'disconnected';
+  document.getElementById('sse-status').style.color = 'var(--dim)';
+  document.getElementById('sse-btn').textContent = 'Connect';
+}
+
+// ── WebSocket ────────────────────────────────────────
+let ws = null;
+let wsCount = 0;
+
+function toggleWS() {
+  if (ws) { disconnectWS(); return; }
+  if (!selectedView) return;
+  wsCount = 0;
+  document.getElementById('ws-count').textContent = '0';
+  document.getElementById('ws-log').innerHTML = '';
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/api/ws/' + encodeURIComponent(selectedView) + '?snapshot=true');
+  document.getElementById('ws-status').textContent = 'connecting...';
+  document.getElementById('ws-status').style.color = 'var(--yellow)';
+  document.getElementById('ws-btn').textContent = 'Disconnect';
+
+  ws.onopen = () => {
+    document.getElementById('ws-status').textContent = 'connected';
+    document.getElementById('ws-status').style.color = 'var(--green)';
+  };
+  ws.onerror = () => {
+    document.getElementById('ws-status').textContent = 'error';
+    document.getElementById('ws-status').style.color = 'var(--red)';
+  };
+  ws.onclose = () => {
+    document.getElementById('ws-status').textContent = 'disconnected';
+    document.getElementById('ws-status').style.color = 'var(--dim)';
+    document.getElementById('ws-btn').textContent = 'Connect';
+    ws = null;
+  };
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type !== 'progress') { wsCount++; document.getElementById('ws-count').textContent = wsCount; }
+      if (msg.type === 'progress' && !document.getElementById('ws-show-progress').checked) return;
+    } catch {}
+    appendLog('ws-log', null, e.data);
+  };
+}
+
+function disconnectWS() {
+  if (ws) { ws.close(); ws = null; }
+  document.getElementById('ws-status').textContent = 'disconnected';
+  document.getElementById('ws-status').style.color = 'var(--dim)';
+  document.getElementById('ws-btn').textContent = 'Connect';
+}
+
+// ── Shared log append ────────────────────────────────
+function appendLog(logId, evType, data) {
+  const log = document.getElementById(logId);
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  const ts = new Date().toLocaleTimeString();
+  let type = evType || '?', summary = '', fullData = null;
+  try {
+    const obj = JSON.parse(data);
+    fullData = obj;
+    if (!evType) type = obj.type || '?';
+    if (obj.key) {
+      summary = `key=${obj.key}`;
+      // Show title columns from the value
+      const titleCols = titleColumnsMap[selectedView] || [];
+      if (titleCols.length && obj.value) {
+        let val = typeof obj.value === 'string' ? JSON.parse(obj.value) : obj.value;
+        const parts = titleCols
+          .filter(c => val[c] !== undefined)
+          .map(c => `${c}=${val[c]}`);
+        if (parts.length) summary += ' ' + parts.join(' ');
+      }
+    }
+    else if (obj.skipped) summary = `skipped=${obj.skipped}`;
+    else if (obj.keys !== undefined) summary = `keys=${obj.keys}`;
+    else summary = '';
+    if (obj.timestamp) summary += ` ts=${obj.timestamp}`;
+  } catch {}
+  // Make data entries clickable to show detail
+  if (fullData && fullData.key) {
+    el.style.cursor = 'pointer';
+    el.onclick = () => showStreamDetail(fullData);
+  }
+  el.innerHTML = `<span class="ts">${ts}</span><span class="ev ${type}">${type}</span>${esc(summary)}`;
+  log.prepend(el);
+  while (log.children.length > 200) log.removeChild(log.lastChild);
+}
+
+function showStreamDetail(obj) {
+  let detail = { key: obj.key };
+  try {
+    detail.value = typeof obj.value === 'string' ? JSON.parse(obj.value) : obj.value;
+  } catch { detail.value = obj.value; }
+  detail.timestamp = obj.timestamp;
+  detail.view = obj.view;
+  const out = document.getElementById('lookup-result');
+  out.textContent = JSON.stringify(detail, null, 2);
+  out.style.color = 'var(--text)';
+  document.getElementById('lookup-key').value = obj.key;
+}
+
+// ── Webhooks ─────────────────────────────────────────
+async function fetchWebhooks() {
+  try {
+    const r = await fetch(API + '/api/webhooks');
+    const hooks = await r.json();
+    const tbody = document.getElementById('wh-tbody');
+    document.getElementById('wh-empty').style.display = hooks.length ? 'none' : 'block';
+    tbody.innerHTML = hooks.map(h => `
+      <tr>
+        <td style="color:var(--dim)">${esc(h.id.slice(0,8))}...</td>
+        <td>${esc(h.url)}</td>
+        <td>${h.views.length ? h.views.map(v=>`<span class="badge info">${esc(v)}</span>`).join(' ') : '<span style="color:var(--dim)">all</span>'}</td>
+        <td><button class="danger" onclick="deleteWebhook('${escAttr(h.id)}')" style="padding:2px 8px;font-size:11px">X</button></td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    console.error('fetchWebhooks', e);
+  }
+}
+
+async function registerTestWebhook() {
+  try {
+    const r = await fetch(API + '/api/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: window.location.origin + '/api/webhook-test',
+        secret: 'demo-secret',
+        views: []
+      })
+    });
+    if (r.ok) fetchWebhooks();
+  } catch (e) {
+    console.error('registerTestWebhook', e);
+  }
+}
+
+async function deleteWebhook(id) {
+  try {
+    await fetch(API + '/api/webhooks/' + id, { method: 'DELETE' });
+    fetchWebhooks();
+  } catch (e) {
+    console.error('deleteWebhook', e);
+  }
+}
+
+// ── Webhook Echo Log ─────────────────────────────────
+async function fetchWebhookLog() {
+  try {
+    const r = await fetch(API + '/api/webhook-test');
+    const log = await r.json();
+    document.getElementById('wh-log-count').textContent = log.length + ' payloads';
+    // Store for click-to-detail.
+    _whLogData = log.slice().reverse();
+    const el = document.getElementById('wh-log');
+    el.innerHTML = _whLogData.map((p, idx) => {
+      const ts = esc(p.received_at?.slice(11, 19) || '');
+      const sig = p.signature ? `sig=${p.signature.slice(0, 12)}...` : 'no sig';
+      const view = p.body?.view || '?';
+      const changes = p.body?.changes;
+      let summary;
+      if (Array.isArray(changes)) {
+        const upserts = changes.filter(c => c.type === 'upsert').length;
+        const deletes = changes.filter(c => c.type === 'delete').length;
+        const parts = [];
+        if (upserts) parts.push(`${upserts} upsert${upserts > 1 ? 's' : ''}`);
+        if (deletes) parts.push(`${deletes} delete${deletes > 1 ? 's' : ''}`);
+        summary = `${parts.join(', ')} · ts=${p.body?.timestamp || '?'}`;
+      } else {
+        summary = `key=${esc(p.body?.key || '?')}`;
+      }
+      return `<div class="log-entry" style="cursor:pointer" onclick="showWebhookDetail(${idx})"><span class="ts">${ts}</span><span class="ev upsert">${esc(view)}</span> ${summary} <span style="color:var(--dim)">${sig}</span></div>`;
+    }).join('');
+  } catch (e) {
+    console.error('fetchWebhookLog', e);
+  }
+}
+
+let _whLogData = [];
+
+function showWebhookDetail(idx) {
+  const p = _whLogData[idx];
+  if (!p) return;
+  const out = document.getElementById('lookup-result');
+  out.textContent = JSON.stringify(p, null, 2);
+  out.style.color = 'var(--text)';
+}
+
+async function clearWebhookLog() {
+  await fetch(API + '/api/webhook-test', { method: 'DELETE' });
+  fetchWebhookLog();
+}
+
+// ── Util ─────────────────────────────────────────────
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
+}
+
+// ── Boot ─────────────────────────────────────────────
+checkHealth();
+fetchViews();
+fetchWebhooks();
+fetchWebhookLog();
+
+setInterval(checkHealth, 5000);
+setInterval(fetchViews, 3000);
+setInterval(fetchWebhookLog, 3000);
+</script>
+</body>
+</html>

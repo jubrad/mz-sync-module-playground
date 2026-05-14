@@ -1,0 +1,43 @@
+# mz-http configuration
+# ---------------------
+# Hydrates Materialize views into an in-memory serving layer exposed over
+# HTTP (REST + SSE + webhooks).
+#
+# Each view's SQL MUST return exactly two columns: `key` and `value`.
+
+server:
+  bind: "0.0.0.0:8080"
+
+# Default Materialize connection — views inherit these unless overridden.
+defaults:
+  host: localhost
+  port: 6875
+  user: materialize
+  password: ""
+  database: materialize
+  tls: false
+  fetch_size: 1024
+
+# Each view becomes a SUBSCRIBE cursor that hydrates an in-memory store.
+views:
+  - name: user_counts
+    sql: "SELECT user_id AS key, jsonb_build_object('count', count, 'last_seen', last_seen)::text AS value FROM user_counts"
+    # Override any default connection field per-view:
+    # cluster: analytics
+    # schema: public
+    # database: analytics_db
+    # host: other-mz.example.com
+    # Session variables set after connecting (before SUBSCRIBE):
+    # session_variables:
+    #   cluster_replica: r1
+    #   transaction_isolation: serializable
+
+  - name: order_summary
+    sql: "SELECT order_id AS key, to_jsonb(o)::text AS value FROM order_summary o"
+    cluster: serving
+
+# Webhooks: on each progress boundary, POST the batch of changes.
+# webhooks:
+#   - url: "https://example.com/hook"
+#     secret: "optional-hmac-sha256-secret"
+#     views: ["user_counts"]   # which views to forward (empty = all)

@@ -1,0 +1,27 @@
+{
+  "name": "@mz-web/sink-sqlite",
+  "version": "0.1.0",
+  "description": "SQLite sink for @mz-web/subscribe — writes Materialize view data to any SQLite",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@mz-web/subscribe": "file:../subscribe"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

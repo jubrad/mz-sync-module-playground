@@ -1,0 +1,33 @@
+[package]
+name = "mz-http"
+version = "0.1.0"
+edition = "2021"
+description = "An HTTP serving layer backed by Materialize SUBSCRIBE — hydrates in-memory state and serves it over REST, SSE, and webhooks"
+
+[dependencies]
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros", "ws"] }
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+dashmap = "6"
+hex = "0.4"
+hmac = "0.12"
+native-tls = "0.2"
+parking_lot = "0.12"
+postgres-native-tls = "0.5"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = "0.7"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
