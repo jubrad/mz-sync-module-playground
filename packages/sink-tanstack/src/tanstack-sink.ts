@@ -30,6 +30,11 @@ export interface MzCollectionSyncOpts {
    * Defaults to `"id"`.
    */
   pk?: string
+
+  /**
+   * Optional callback invoked when the connection state changes for the view.
+   */
+  onConnectionChange?: (view: string, connected: boolean) => void
 }
 
 /**
@@ -63,31 +68,44 @@ export function mzCollectionSync<T extends Record<string, unknown> = Record<stri
   const sync: SyncFn<T> = (params) => {
     const { begin, write, commit, markReady } = params
 
+    let ready = false
+
     const sink: MzSink = {
       onBatch(batch: MzBatch) {
         // Only process batches for our view
         if (batch.view !== viewName) return
 
-        // Skip empty batches
+        // Always check readiness first, even for empty batches.
+        // Both snapshot and catchup signal that initial data is complete.
+        if ((batch.kind === 'snapshot' || batch.kind === 'catchup') && !ready) {
+          markReady()
+          ready = true
+        }
+
+        // Skip empty batches for the write path
         if (batch.upserts.size === 0 && batch.deletes.size === 0) return
 
-        begin()
+        // NOTE: TanStack DB does not currently expose an explicit rollback
+        // mechanism; if begin/write/commit throws, the transaction state may
+        // be left inconsistent. We re-throw so the subscribe client can log it.
+        try {
+          begin()
 
-        for (const [, value] of batch.upserts) {
-          write({ type: 'insert', value: value as T })
-        }
+          for (const [, value] of batch.upserts) {
+            write({ type: 'insert', value: value as T })
+          }
 
-        for (const key of batch.deletes) {
-          write({ type: 'delete', value: { [pk]: key } as unknown as T })
-        }
+          for (const key of batch.deletes) {
+            write({ type: 'delete', value: { [pk]: key } as unknown as T })
+          }
 
-        commit()
-
-        // Signal readiness after snapshot completes
-        if (batch.kind === 'snapshot') {
-          markReady()
+          commit()
+        } catch (err) {
+          throw err
         }
       },
+
+      onConnectionChange: opts?.onConnectionChange,
     }
 
     const removeSink = client.addSink(sink)

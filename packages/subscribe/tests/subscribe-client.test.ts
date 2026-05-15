@@ -282,4 +282,178 @@ describe('MzSubscribeClient', () => {
 
     client.destroy()
   })
+
+  it('lagged event resets progress and reconnects with snapshot', async () => {
+    const connectCalls: { since?: number; snapshot?: boolean }[] = []
+    let callCount = 0
+    const transport: MzTransportProvider = {
+      connect(_view, opts) {
+        connectCalls.push(opts)
+        callCount++
+        let closed = false
+        const currentCall = callCount
+        return {
+          events: {
+            async *[Symbol.asyncIterator]() {
+              if (closed) return
+              if (currentCall === 1) {
+                // First connection: advance progress, then send lagged
+                yield { type: 'upsert' as const, key: '1', value: { x: 1 } }
+                yield { type: 'progress' as const, timestamp: 1000 }
+                yield { type: 'lagged' as const }
+              } else {
+                // Second connection (after lagged): should be snapshot
+                yield { type: 'upsert' as const, key: '1', value: { x: 2 } }
+                yield { type: 'snapshot_complete' as const, timestamp: 2000 }
+                await new Promise<void>((r) => {
+                  const interval = setInterval(() => { if (closed) { clearInterval(interval); r() } }, 10)
+                })
+              }
+            },
+          },
+          close() { closed = true },
+        }
+      },
+    }
+
+    const client = new MzSubscribeClient({ transport, reconnectMs: 10 })
+    const sink = collectingSink()
+    client.addSink(sink)
+    client.addView('v')
+
+    await new Promise((r) => setTimeout(r, 300))
+
+    // After lagged, progress should be reset and reconnect should request snapshot
+    expect(connectCalls.length).toBeGreaterThanOrEqual(2)
+    expect(connectCalls[1]).toEqual({ snapshot: true })
+
+    // Second connection should deliver a snapshot batch
+    const snapshotBatch = sink.batches.find(b => b.progress === 2000)
+    expect(snapshotBatch).toBeDefined()
+    expect(snapshotBatch!.kind).toBe('snapshot')
+
+    client.destroy()
+  })
+
+  it('empty snapshot_complete advances progress', async () => {
+    const transport = mockTransportThatStaysOpen([
+      { type: 'snapshot_complete', timestamp: 500 },
+    ])
+
+    const client = new MzSubscribeClient({ transport, reconnectMs: 50 })
+    const sink = collectingSink()
+    client.addSink(sink)
+    client.addView('v')
+
+    await new Promise((r) => setTimeout(r, 100))
+
+    const handle = client.getView('v')
+    expect(handle?.ready).toBe(true)
+    expect(handle?.progress).toBe(500)
+    // No batches should be delivered since there were no pending events
+    expect(sink.batches.length).toBe(0)
+
+    client.destroy()
+  })
+
+  it('sink throwing in onBatch does not kill the stream', async () => {
+    const transport = mockTransport([
+      { type: 'upsert', key: '1', value: { v: 1 } },
+      { type: 'progress', timestamp: 100 },
+      { type: 'upsert', key: '2', value: { v: 2 } },
+      { type: 'progress', timestamp: 200 },
+    ])
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const throwingSink: MzSink = {
+      onBatch() { throw new Error('sink exploded') },
+    }
+    const goodSink = collectingSink()
+
+    const client = new MzSubscribeClient({ transport, reconnectMs: 50 })
+    client.addSink(throwingSink)
+    client.addSink(goodSink)
+    client.addView('v')
+
+    await new Promise((r) => setTimeout(r, 150))
+
+    // The good sink should still receive both batches despite the throwing sink
+    expect(goodSink.batches.length).toBe(2)
+    expect(goodSink.batches[0].progress).toBe(100)
+    expect(goodSink.batches[1].progress).toBe(200)
+
+    errorSpy.mockRestore()
+    client.destroy()
+  })
+
+  it('addView after destroy throws', () => {
+    const transport = mockTransport([])
+    const client = new MzSubscribeClient({ transport })
+    client.destroy()
+
+    expect(() => client.addView('v')).toThrow(/destroyed/)
+  })
+
+  it('catchup_complete flow delivers batch with catchup kind', async () => {
+    const connectCalls: { since?: number; snapshot?: boolean }[] = []
+    let callCount = 0
+    const transport: MzTransportProvider = {
+      connect(_view, opts) {
+        connectCalls.push(opts)
+        callCount++
+        let resolver: (() => void) | null = null
+        let closed = false
+        return {
+          events: {
+            async *[Symbol.asyncIterator]() {
+              if (closed) return
+              if (callCount === 1) {
+                // First connection: snapshot
+                yield { type: 'upsert' as const, key: '1', value: { v: 1 } }
+                yield { type: 'snapshot_complete' as const, timestamp: 500 }
+                // Close stream to simulate disconnect
+              } else {
+                // Second connection: catchup with since
+                yield { type: 'upsert' as const, key: '1', value: { v: 2 } }
+                yield { type: 'catchup_complete' as const, timestamp: 1000 }
+                yield { type: 'upsert' as const, key: '1', value: { v: 3 } }
+                yield { type: 'progress' as const, timestamp: 1500 }
+                await new Promise<void>((r) => { resolver = r })
+              }
+            },
+          },
+          close() { closed = true; resolver?.() },
+        }
+      },
+    }
+
+    const client = new MzSubscribeClient({ transport, reconnectMs: 10 })
+    const sink = collectingSink()
+    client.addSink(sink)
+    client.addView('v')
+
+    // Wait for first connection + disconnect + reconnect + second connection
+    await new Promise((r) => setTimeout(r, 300))
+
+    // First batch: snapshot
+    expect(sink.batches[0].kind).toBe('snapshot')
+    expect(sink.batches[0].progress).toBe(500)
+
+    // The reconnection should use since (progress > 0)
+    expect(connectCalls.length).toBeGreaterThanOrEqual(2)
+    expect(connectCalls[1]).toEqual({ since: 500 })
+
+    // Should have a catchup batch
+    const catchupBatch = sink.batches.find(b => b.kind === 'catchup')
+    expect(catchupBatch).toBeDefined()
+    expect(catchupBatch!.progress).toBe(1000)
+
+    // And a progress batch after catchup
+    const progressBatch = sink.batches.find(b => b.progress === 1500)
+    expect(progressBatch).toBeDefined()
+    expect(progressBatch!.kind).toBe('progress')
+
+    client.destroy()
+  })
 })

@@ -29,7 +29,7 @@ export function useMzKey<T = Record<string, unknown>>(
         `${baseUrl}/api/views/${encodeURIComponent(viewName)}/${encodeURIComponent(key)}`,
       )
       if (!res.ok) {
-        setValue(undefined)
+        if (mountedRef.current) setValue(undefined)
         return
       }
       const data = await res.json()

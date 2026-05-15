@@ -38,6 +38,7 @@ export function useMzViews(intervalMs = 3000): UseMzViewsResult {
         setLoading(false)
       } catch {
         // Silently retry on next interval
+        if (mountedRef.current) setLoading(false)
       }
     }
 

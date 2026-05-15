@@ -29,24 +29,61 @@ export function useLiveQuery<T = Record<string, unknown>>(
   const paramsRef = useRef(params)
   paramsRef.current = params
 
+  // C1: Serialize params so we can use it as a dependency
+  const paramsKey = JSON.stringify(params)
+
+  // C3: Request ID ref to prevent stale subscription results from overwriting fresh ones
+  const requestIdRef = useRef(0)
+
   const runQuery = useCallback(async () => {
+    const myId = ++requestIdRef.current
     if (!sql || !sqliteSink) {
       setRows([])
       return
     }
     try {
       const result = await sqliteSink.query<T>(sql, paramsRef.current)
-      setRows(result)
-      setVersion((v) => v + 1)
+      if (myId === requestIdRef.current) {
+        setRows(result)
+        setVersion((v) => v + 1)
+      }
     } catch (e) {
-      console.error('[useLiveQuery] query error:', e)
+      if (myId === requestIdRef.current) {
+        console.error('[useLiveQuery] query error:', e)
+      }
     }
   }, [sql, sqliteSink])
 
-  // Run query initially and on sql change
+  // C1 + C2: Run query initially and when sql, sqliteSink, or params change.
+  // The cancelled flag prevents setState after unmount or after dependencies change.
   useEffect(() => {
-    runQuery()
-  }, [runQuery])
+    let cancelled = false
+    const myId = ++requestIdRef.current
+
+    const run = async () => {
+      if (!sql || !sqliteSink) {
+        if (!cancelled) setRows([])
+        return
+      }
+      try {
+        const result = await sqliteSink.query<T>(sql, paramsRef.current)
+        if (!cancelled && myId === requestIdRef.current) {
+          setRows(result)
+          setVersion((v) => v + 1)
+        }
+      } catch (e) {
+        if (!cancelled) console.error('[useLiveQuery]', e)
+      }
+    }
+    run()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sql, sqliteSink, paramsKey])
+
+  // W1: Use JSON.stringify(tables) instead of tables.join(',') for safety
+  const tablesKey = JSON.stringify(tables)
 
   // Subscribe to table commits and re-run query
   useEffect(() => {
@@ -61,7 +98,8 @@ export function useLiveQuery<T = Record<string, unknown>>(
     return () => {
       for (const unsub of unsubs) unsub()
     }
-  }, [sql, sqliteSink, tables.join(','), runQuery])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sql, sqliteSink, tablesKey, runQuery])
 
   return { rows, version }
 }

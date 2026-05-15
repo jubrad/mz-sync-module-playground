@@ -17,6 +17,12 @@ export type MzEvent =
  * Upserts within a batch are collapsed: if a key is upserted multiple times,
  * only the last value is kept. If a key is upserted then deleted, it appears
  * only in `deletes`.
+ *
+ * **Important:** Batches must not be mutated by sinks. The same batch instance
+ * is delivered to all registered sinks. Mutating it (e.g. modifying the
+ * `upserts` map or `deletes` set) will corrupt data for other sinks and for
+ * the subscribe client itself. If a sink needs to transform the data, it
+ * should make a copy first.
  */
 export interface MzBatch {
   /** View name this batch belongs to. */

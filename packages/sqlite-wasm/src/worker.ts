@@ -26,8 +26,7 @@ async function init(id: number) {
     const module = await SQLiteESMFactory()
     sqlite = SQLite.Factory(module)
     db = await sqlite.open_v2(':memory:')
-    await sqlite.exec(db, 'PRAGMA journal_mode=WAL')
-    await sqlite.exec(db, 'PRAGMA synchronous=OFF')
+    // W4: PRAGMA journal_mode=WAL and synchronous=OFF are no-ops for :memory: databases
     self.postMessage({ type: 'ready', id })
   } catch (e) {
     self.postMessage({ type: 'error', id, error: String(e) })
@@ -46,6 +45,12 @@ async function exec(id: number, sql: string) {
 async function query(id: number, sql: string, params?: unknown[]) {
   const rows: Record<string, unknown>[] = []
   try {
+    // C1: wa-sqlite's execWithParams does not accept a callback.
+    // The sink-sqlite package generates all SQL with inline values (via escapeVal),
+    // so parameters are never actually used. Always use exec(db, sql, cb).
+    if (params && params.length) {
+      console.warn('[sqlite-wasm worker] Parameterized queries are not supported; params ignored. SQL values should be inlined.')
+    }
     const cb = (row: unknown[], columns: string[]) => {
       const obj: Record<string, unknown> = {}
       for (let i = 0; i < columns.length; i++) {
@@ -53,11 +58,7 @@ async function query(id: number, sql: string, params?: unknown[]) {
       }
       rows.push(obj)
     }
-    if (params && params.length) {
-      await sqlite.execWithParams(db, sql, params, cb)
-    } else {
-      await sqlite.exec(db, sql, cb)
-    }
+    await sqlite.exec(db, sql, cb)
     self.postMessage({ type: 'result', id, rows })
   } catch (e) {
     const msg = String(e)
@@ -74,5 +75,8 @@ self.onmessage = async (e: MessageEvent) => {
     case 'init':  return init(msg.id)
     case 'exec':  return exec(msg.id, msg.sql)
     case 'query': return query(msg.id, msg.sql, msg.params)
+    // W6: Unknown message types get an error response
+    default:
+      self.postMessage({ type: 'error', id: msg.id, error: `Unknown message type: ${msg.type}` })
   }
 }

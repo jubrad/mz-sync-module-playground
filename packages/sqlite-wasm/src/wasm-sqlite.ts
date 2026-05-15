@@ -30,7 +30,11 @@ export class WasmSqlite implements SqliteExec {
   async init(): Promise<void> {
     if (this.ready) return
     if (this.initPromise) return this.initPromise
-    this.initPromise = this._init()
+    // C2: Reset initPromise on failure so init() can be retried
+    this.initPromise = this._init().catch((e) => {
+      this.initPromise = null
+      throw e
+    })
     return this.initPromise
   }
 
@@ -51,9 +55,15 @@ export class WasmSqlite implements SqliteExec {
         }
 
         this.worker.onmessage = (e) => this.onMessage(e.data)
+
+        // C3: Persistent error handler that rejects all pending promises
         this.worker.onerror = (e) => {
           console.error('[sqlite-wasm] worker error:', e)
-          reject(e)
+          this.ready = false
+          for (const [, p] of this.pending) {
+            p.reject(new Error('Worker crashed'))
+          }
+          this.pending.clear()
         }
 
         const id = this.nextId++
@@ -76,7 +86,8 @@ export class WasmSqlite implements SqliteExec {
 
   /** Execute a query and return rows. */
   async query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
-    if (!this.ready) return []
+    // W1: Throw consistently with exec() instead of silently returning []
+    if (!this.ready) throw new Error('WasmSqlite not initialized')
     return this.send({ type: 'query', sql, params })
   }
 
@@ -85,6 +96,8 @@ export class WasmSqlite implements SqliteExec {
     this.worker?.terminate()
     this.worker = null
     this.ready = false
+    // S5: Reset initPromise so a new instance is needed
+    this.initPromise = null
     // Reject all pending
     for (const [, p] of this.pending) {
       p.reject(new Error('WasmSqlite destroyed'))
@@ -93,6 +106,8 @@ export class WasmSqlite implements SqliteExec {
   }
 
   private send(msg: any): Promise<any> {
+    // W3: Guard against calling send() after destroy()
+    if (!this.worker) return Promise.reject(new Error('WasmSqlite has been destroyed'))
     return new Promise((resolve, reject) => {
       const id = this.nextId++
       this.pending.set(id, { resolve, reject })

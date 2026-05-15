@@ -2,10 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import { useMzContext } from './context.js'
 
 export interface UseFreshnessResult {
-  /** Rolling 3-second average staleness in milliseconds. */
+  /** Rolling 3-second average staleness in milliseconds. -1 means no data received yet. */
   avgMs: number
-  /** Freshness color: green (<500ms), yellow (<2000ms), red (>=2000ms). */
-  color: 'green' | 'yellow' | 'red'
+  /** Freshness color: gray (no data), green (<500ms), yellow (<2000ms), red (>=2000ms). */
+  color: 'gray' | 'green' | 'yellow' | 'red'
   /** Human-readable label for the current freshness. */
   label: string
 }
@@ -17,18 +17,28 @@ export interface UseFreshnessResult {
  */
 export function useFreshness(): UseFreshnessResult {
   const { sqliteSink } = useMzContext()
-  const [avgMs, setAvgMs] = useState(0)
+  const [avgMs, setAvgMs] = useState(-1)
   const samplesRef = useRef<number[]>([])
+  const hasReceivedDataRef = useRef(false)
 
   useEffect(() => {
     if (!sqliteSink) return
+
+    hasReceivedDataRef.current = false
 
     // Rolling window: 3 seconds / 200ms = 15 samples
     const MAX_SAMPLES = 15
 
     const timer = setInterval(() => {
       const lastCommit = sqliteSink.lastCommitTime
-      const staleness = lastCommit > 0 ? Date.now() - lastCommit : 0
+      if (lastCommit === 0) {
+        // No data received yet
+        setAvgMs(-1)
+        return
+      }
+
+      hasReceivedDataRef.current = true
+      const staleness = Date.now() - lastCommit
       const samples = samplesRef.current
 
       samples.push(staleness)
@@ -49,6 +59,10 @@ export function useFreshness(): UseFreshnessResult {
       samplesRef.current = []
     }
   }, [sqliteSink])
+
+  if (avgMs < 0) {
+    return { avgMs: -1, color: 'gray', label: 'Waiting' }
+  }
 
   const color: UseFreshnessResult['color'] =
     avgMs < 500 ? 'green' : avgMs < 2000 ? 'yellow' : 'red'

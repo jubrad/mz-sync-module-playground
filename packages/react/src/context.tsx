@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import type { MzSubscribeClient } from '@mz-web/subscribe'
 import type { MzSqliteSink } from '@mz-web/sink-sqlite'
 
@@ -23,7 +23,8 @@ export interface MzProviderProps extends MzContextValue {
  *
  * All mz-web hooks must be used within an MzProvider.
  */
-export function MzProvider({ children, ...value }: MzProviderProps) {
+export function MzProvider({ children, baseUrl, client, sqliteSink }: MzProviderProps) {
+  const value = useMemo(() => ({ baseUrl, client, sqliteSink }), [baseUrl, client, sqliteSink])
   return <MzContext.Provider value={value}>{children}</MzContext.Provider>
 }
 

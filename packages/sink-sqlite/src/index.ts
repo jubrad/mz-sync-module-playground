@@ -18,6 +18,7 @@ export {
 } from './schema.js'
 
 export {
+  escapeIdent,
   escapeVal,
   createTableDDL,
   batchWriteSQL,

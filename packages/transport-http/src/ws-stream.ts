@@ -47,11 +47,14 @@ export function createWsStream(baseUrl: string, view: string, opts: ConnectOpts)
   }
 
   ws.onclose = () => queue.end()
-  ws.onerror = () => queue.end()
+  ws.onerror = () => queue.throw(new Error('WebSocket error'))
 
   return {
     events: queue,
     close() {
+      ws.onclose = null
+      ws.onerror = null
+      ws.onmessage = null
       ws.close()
       queue.end()
     },

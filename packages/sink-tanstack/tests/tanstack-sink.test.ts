@@ -18,6 +18,12 @@ function createMockClient() {
         await sink.onBatch(batch)
       }
     },
+    /** Notify all sinks of a connection state change. */
+    notifyConnectionChange(view: string, connected: boolean) {
+      for (const sink of sinks) {
+        sink.onConnectionChange?.(view, connected)
+      }
+    },
     get sinkCount() { return sinks.size },
   }
 }
@@ -149,10 +155,10 @@ describe('mzCollectionSync', () => {
     }))
 
     expect(calls).toEqual([
+      { method: 'markReady' },
       { method: 'begin' },
       { method: 'write', args: [{ type: 'insert', value: { id: '1', product: 'Widget', qty: 5 } }] },
       { method: 'commit' },
-      { method: 'markReady' },
     ])
   })
 
@@ -169,7 +175,7 @@ describe('mzCollectionSync', () => {
     expect(params.markReady).not.toHaveBeenCalled()
   })
 
-  it('does NOT call markReady on catchup batch', async () => {
+  it('calls markReady on catchup batch', async () => {
     const { sync } = mzCollectionSync(client as any, 'orders')
     const { params } = createMockSyncParams()
     sync(params)
@@ -179,7 +185,7 @@ describe('mzCollectionSync', () => {
       upserts: new Map([['1', { id: '1', product: 'Widget', qty: 5 }]]),
     }))
 
-    expect(params.markReady).not.toHaveBeenCalled()
+    expect(params.markReady).toHaveBeenCalledTimes(1)
   })
 
   it('ignores batches for other views', async () => {
@@ -249,5 +255,63 @@ describe('mzCollectionSync', () => {
       method: 'write',
       args: [{ type: 'insert', value: { id: 'a', sku: 'SKU-1' } }],
     })
+  })
+
+  it('calls markReady for empty snapshot batches', async () => {
+    const { sync } = mzCollectionSync(client as any, 'orders')
+    const { params } = createMockSyncParams()
+    sync(params)
+
+    await client.deliver(makeBatch({
+      kind: 'snapshot',
+      upserts: new Map(),
+      deletes: new Set(),
+    }))
+
+    expect(params.markReady).toHaveBeenCalledTimes(1)
+    // begin/write/commit should NOT be called for empty batches
+    expect(params.begin).not.toHaveBeenCalled()
+  })
+
+  it('calls markReady only once across multiple snapshot batches', async () => {
+    const { sync } = mzCollectionSync(client as any, 'orders')
+    const { params } = createMockSyncParams()
+    sync(params)
+
+    await client.deliver(makeBatch({
+      kind: 'snapshot',
+      upserts: new Map([['1', { id: '1', product: 'Widget' }]]),
+    }))
+
+    await client.deliver(makeBatch({
+      kind: 'snapshot',
+      upserts: new Map([['2', { id: '2', product: 'Gadget' }]]),
+    }))
+
+    expect(params.markReady).toHaveBeenCalledTimes(1)
+  })
+
+  it('propagates begin/write/commit errors', async () => {
+    const { sync } = mzCollectionSync(client as any, 'orders')
+    const { params } = createMockSyncParams()
+    params.begin = vi.fn(() => { throw new Error('begin failed') })
+    sync(params)
+
+    await expect(
+      client.deliver(makeBatch({
+        upserts: new Map([['1', { id: '1', product: 'Widget' }]]),
+      }))
+    ).rejects.toThrow('begin failed')
+  })
+
+  it('invokes onConnectionChange callback', () => {
+    const onConnectionChange = vi.fn()
+    const { sync } = mzCollectionSync(client as any, 'orders', { onConnectionChange })
+    const { params } = createMockSyncParams()
+    sync(params)
+
+    client.notifyConnectionChange('orders', true)
+
+    expect(onConnectionChange).toHaveBeenCalledWith('orders', true)
   })
 })

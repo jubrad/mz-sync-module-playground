@@ -1,7 +1,7 @@
 import type { MzBatch, MzSink } from '@mz-web/subscribe'
 import type { SqliteExec, TableSchema, SchemaMode, SinkSqliteOpts } from './types.js'
 import { inferSchema, resolveSchema } from './schema.js'
-import { createTableDDL, batchWriteSQL } from './table-writer.js'
+import { createTableDDL, batchWriteSQL, escapeIdent } from './table-writer.js'
 
 interface TableState {
   schema: TableSchema | null
@@ -58,12 +58,21 @@ export class MzSqliteSink implements MzSink {
       // If still no schema, infer from first upsert
       if (!table.schema && upserts.size > 0) {
         const firstRow = upserts.values().next().value!
-        const firstKey = upserts.keys().next().value!
-        // Try to detect PK from the row
-        const pk = 'id' in firstRow ? 'id' : undefined
-        table.schema = inferSchema({ ...firstRow, ...(pk ? {} : { [firstKey]: firstKey }) }, pk)
+        // Use 'id' if the row has it; otherwise fall back to '_key' as a
+        // synthetic PK column name. Using a fixed column name avoids the
+        // previous brittle heuristic that used the actual key *value* as
+        // the column name.
+        const pk = 'id' in firstRow ? 'id' : '_key'
+        table.schema = inferSchema(firstRow, pk)
       }
-      if (!table.schema) return // can't create table without data
+      if (!table.schema) {
+        // Delete-only batch with no schema available — we cannot process
+        // deletes without knowing the table structure.
+        if (deletes.size > 0) {
+          console.warn(`[sink-sqlite] dropping ${deletes.size} delete(s) for "${view}": no schema available yet`)
+        }
+        return
+      }
 
       await this.db.exec(createTableDDL(view, table.schema))
       table.created = true
@@ -76,7 +85,7 @@ export class MzSqliteSink implements MzSink {
     } catch (e) {
       console.error(`[sink-sqlite] write error for ${view}:`, e)
       // Attempt rollback
-      try { await this.db.exec('ROLLBACK') } catch {}
+      try { await this.db.exec('ROLLBACK') } catch (re) { console.error('[sink-sqlite] ROLLBACK failed:', re) }
       return
     }
 
@@ -132,7 +141,7 @@ export class MzSqliteSink implements MzSink {
     for (const [name, state] of this.tables) {
       if (!state.created) continue
       try {
-        const r = await this.db.query<{ cnt: number }>(`SELECT count(*) as cnt FROM "${name}"`)
+        const r = await this.db.query<{ cnt: number }>(`SELECT count(*) as cnt FROM ${escapeIdent(name)}`)
         tables.push({ name, rows: r[0]?.cnt ?? 0 })
       } catch {
         tables.push({ name, rows: 0 })

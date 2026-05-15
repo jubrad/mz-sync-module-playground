@@ -34,6 +34,8 @@ interface ViewState {
   abortController: AbortController | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
   backoff: number
+  /** Generation counter — incremented on resync/teardown to detect stale consume loops. */
+  generation: number
 }
 
 /**
@@ -75,6 +77,10 @@ export class MzSubscribeClient {
 
   /** Start subscribing to a view. Ref-counted — safe to call multiple times. */
   addView(view: string): ViewHandle {
+    if (this.destroyed) {
+      throw new Error(`[mz-subscribe] cannot addView("${view}"): client is destroyed`)
+    }
+
     let state = this.views.get(view)
     if (state) {
       state.refCount++
@@ -91,6 +97,7 @@ export class MzSubscribeClient {
       abortController: null,
       reconnectTimer: null,
       backoff: this.reconnectMs,
+      generation: 0,
     }
     this.views.set(view, state)
     this.startConsuming(state)
@@ -124,6 +131,7 @@ export class MzSubscribeClient {
     for (const state of this.views.values()) {
       state.progress = 0
       state.ready = false
+      state.generation++
       this.teardownView(state)
       this.startConsuming(state)
     }
@@ -169,6 +177,7 @@ export class MzSubscribeClient {
   private async startConsuming(state: ViewState): Promise<void> {
     if (this.destroyed) return
 
+    const generation = state.generation
     const abort = new AbortController()
     state.abortController = abort
 
@@ -187,7 +196,7 @@ export class MzSubscribeClient {
       if (!state.ready) accumulator.setSnapshotMode(true)
 
       for await (const event of stream.events) {
-        if (abort.signal.aborted) break
+        if (abort.signal.aborted || state.generation !== generation) break
 
         switch (event.type) {
           case 'upsert':
@@ -199,6 +208,7 @@ export class MzSubscribeClient {
             if (accumulator.hasPending) {
               const batch = accumulator.seal(event.timestamp)
               state.progress = event.timestamp
+              if (state.generation !== generation) break
               await this.deliverBatch(batch)
             } else {
               state.progress = event.timestamp
@@ -209,7 +219,11 @@ export class MzSubscribeClient {
             if (accumulator.hasPending) {
               const batch = accumulator.seal(event.timestamp, 'snapshot')
               state.progress = event.timestamp
+              if (state.generation !== generation) break
               await this.deliverBatch(batch)
+            } else {
+              // W3: advance progress even when accumulator has no pending events
+              state.progress = event.timestamp
             }
             state.ready = true
             break
@@ -218,7 +232,11 @@ export class MzSubscribeClient {
             if (accumulator.hasPending) {
               const batch = accumulator.seal(event.timestamp, 'catchup')
               state.progress = event.timestamp
+              if (state.generation !== generation) break
               await this.deliverBatch(batch)
+            } else {
+              // W3: advance progress even when accumulator has no pending events
+              state.progress = event.timestamp
             }
             state.ready = true
             break
@@ -227,12 +245,20 @@ export class MzSubscribeClient {
             // Server says our cursor is too old — reset and reconnect
             state.progress = 0
             state.ready = false
+            // W4: clear the accumulator and break to force reconnect with fresh snapshot
+            accumulator.seal(0)
             break
         }
+
+        // W4: after lagged, break out of the for-await loop to trigger reconnect
+        if (event.type === 'lagged') break
       }
     } catch {
       // Stream errored — will reconnect below
     }
+
+    // If generation changed, another startConsuming is already running — bail out silently
+    if (state.generation !== generation) return
 
     // Stream ended (disconnect, error, or abort)
     state.connected = false
@@ -248,10 +274,13 @@ export class MzSubscribeClient {
 
   private scheduleReconnect(state: ViewState): void {
     if (state.reconnectTimer) return
-    const delay = state.backoff
+    const delay = state.backoff * (0.5 + Math.random()) // W6: jitter
     state.backoff = Math.min(state.backoff * 1.5, this.maxReconnectMs)
+    const gen = state.generation
     state.reconnectTimer = setTimeout(() => {
       state.reconnectTimer = null
+      // W5: if generation changed while we were waiting, abort silently
+      if (state.generation !== gen) return
       this.startConsuming(state)
     }, delay)
   }

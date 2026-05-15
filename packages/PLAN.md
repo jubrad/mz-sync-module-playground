@@ -16,7 +16,15 @@
 - WebSocket (default) and SSE modes
 - Converts push-based APIs (WS onmessage, SSE events) to `AsyncIterable<MzEvent>`
 - URL construction, JSON parsing, query param handling (`?since=`, `?snapshot=true`)
-- Future: `@mz-web/transport-direct` for Materialize's native WS subscribe API
+
+### 2b. `@mz-web/transport-direct` — Direct Materialize WebSocket transport
+- Implements `MzTransportProvider` for Materialize's native WS API (`/api/experimental/sql`)
+- Authenticates with user/password or token
+- Sends `SUBSCRIBE ... ENVELOPE UPSERT` queries directly to MZ
+- Parses MZ Row messages (`[mz_timestamp, mz_progressed, mz_state, key, ...values]`) into `MzEvent`
+- View SQL and key column registered via `registerView()` before connecting
+- Supports `AS OF <timestamp>` for reconnection catchup
+- Best for Node.js, edge functions, CLI — browser use limited by MZ CORS
 
 ### 3. `@mz-web/sink-sqlite` — Generic SQLite sink
 - Implements `MzSink` to consume batches from subscribe client
@@ -98,6 +106,7 @@ interface MzBatch {
 @mz-web/subscribe          (zero deps)
     ▲
     ├── @mz-web/transport-http     (depends on subscribe types)
+    ├── @mz-web/transport-direct   (depends on subscribe types)
     │
     ├── @mz-web/sink-sqlite        (depends on subscribe types)
     │       ▲

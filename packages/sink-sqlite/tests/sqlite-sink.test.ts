@@ -155,4 +155,74 @@ describe('MzSqliteSink', () => {
     expect(db.execCalls[0]).toContain('"id" INTEGER')
     expect(db.execCalls[0]).toContain('"name" TEXT')
   })
+
+  it('uses _key as synthetic PK when row has no id field (W3)', async () => {
+    const db = mockDb()
+    const sink = new MzSqliteSink({ db })
+
+    await sink.onBatch({
+      view: 'v',
+      upserts: new Map([['mykey', { name: 'alice', score: 42 }]]),
+      deletes: new Set(),
+      progress: 100,
+      kind: 'progress',
+    })
+
+    // The CREATE TABLE DDL should reference "_key" as the PK column
+    expect(db.execCalls[0]).toContain('"_key"')
+    expect(db.execCalls[0]).toContain('PRIMARY KEY ("_key")')
+  })
+
+  it('logs warning for delete-only batch with no schema (W2)', async () => {
+    const db = mockDb()
+    const sink = new MzSqliteSink({ db })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await sink.onBatch({
+      view: 'v',
+      upserts: new Map(),
+      deletes: new Set(['1', '2']),
+      progress: 100,
+      kind: 'progress',
+    })
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('dropping 2 delete(s)'),
+    )
+    // No SQL should have been executed
+    expect(db.execCalls.length).toBe(0)
+    warnSpy.mockRestore()
+  })
+
+  it('logs ROLLBACK failure (W1)', async () => {
+    const db = mockDb()
+    // Make exec fail on the batch write (second call)
+    let callCount = 0
+    db.exec = async (sql: string) => {
+      callCount++
+      if (callCount === 2) throw new Error('write failed')
+      if (callCount === 3) throw new Error('rollback failed')
+    }
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sink = new MzSqliteSink({ db })
+
+    await sink.onBatch({
+      view: 'v',
+      upserts: new Map([['1', { id: 1 }]]),
+      deletes: new Set(),
+      progress: 100,
+      kind: 'progress',
+    })
+
+    // Should have logged the write error and the rollback failure
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('write error'),
+      expect.any(Error),
+    )
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('ROLLBACK failed'),
+      expect.any(Error),
+    )
+    errorSpy.mockRestore()
+  })
 })

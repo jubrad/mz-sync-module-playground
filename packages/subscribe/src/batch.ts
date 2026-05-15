@@ -25,9 +25,20 @@ export class BatchAccumulator {
   add(event: MzEvent): void {
     switch (event.type) {
       case 'upsert': {
-        const val = typeof event.value === 'string'
-          ? JSON.parse(event.value) as Record<string, unknown>
-          : event.value
+        let val: Record<string, unknown>
+        if (typeof event.value === 'string') {
+          try {
+            val = JSON.parse(event.value) as Record<string, unknown>
+          } catch (e) {
+            console.warn(
+              `[mz-subscribe] skipping upsert for key "${event.key}": malformed JSON value`,
+              e,
+            )
+            return
+          }
+        } else {
+          val = event.value
+        }
         this.upserts.set(event.key, val)
         this.deletes.delete(event.key)
         break

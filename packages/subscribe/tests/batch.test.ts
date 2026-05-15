@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { BatchAccumulator } from '../src/batch.js'
 
 describe('BatchAccumulator', () => {
@@ -96,5 +96,22 @@ describe('BatchAccumulator', () => {
     expect(batch.deletes.size).toBe(2)
     expect(batch.deletes.has('1')).toBe(true)
     expect(batch.deletes.has('2')).toBe(true)
+  })
+
+  it('skips upserts with malformed JSON string values', () => {
+    const acc = new BatchAccumulator('v')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    acc.add({ type: 'upsert', key: '1', value: '{not valid json' })
+    acc.add({ type: 'upsert', key: '2', value: { name: 'valid' } })
+
+    expect(acc.pendingCount).toBe(1)
+    const batch = acc.seal(100)
+    expect(batch.upserts.size).toBe(1)
+    expect(batch.upserts.get('2')).toEqual({ name: 'valid' })
+    expect(batch.upserts.has('1')).toBe(false)
+    expect(warnSpy).toHaveBeenCalledOnce()
+
+    warnSpy.mockRestore()
   })
 })

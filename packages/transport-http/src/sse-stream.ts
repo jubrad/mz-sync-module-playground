@@ -2,7 +2,7 @@ import type { MzEvent, ConnectOpts } from '@mz-web/subscribe'
 import type { MzViewStream } from '@mz-web/subscribe'
 import { AsyncQueue } from './async-queue.js'
 
-const SSE_EVENT_TYPES = ['upsert', 'delete', 'progress', 'catchup_complete', 'snapshot_complete'] as const
+const SSE_EVENT_TYPES = ['upsert', 'delete', 'progress', 'catchup_complete', 'snapshot_complete', 'lagged'] as const
 
 /**
  * Create an SSE-based MzViewStream for a view.
@@ -47,6 +47,7 @@ export function createSseStream(baseUrl: string, view: string, opts: ConnectOpts
   return {
     events: queue,
     close() {
+      es.onerror = null
       es.close()
       queue.end()
     },
