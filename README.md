@@ -9,6 +9,21 @@ An HTTP serving layer for [Materialize](https://materialize.com). Uses `SUBSCRIB
                           +------------------+
 ```
 
+## JavaScript/TypeScript Packages
+
+The [`packages/`](./packages/) directory contains modular `@mz-web/*` npm packages for building real-time frontends on Materialize — pluggable transports, SQLite/TanStack DB sinks, and React hooks. See the [packages README](./packages/README.md) for details.
+
+## Demo: Fresh Delivery
+
+The [`demo/`](./demo/) directory contains a full-stack pizza delivery operations dashboard built on this stack. It simulates a national delivery platform (like Uber Eats) with hundreds of partner stores, real-time order pipelines, driver management, and live operational alerts — all powered by Materialize incremental view maintenance synced to an in-browser SQLite database.
+
+```bash
+cd demo
+./run.sh    # starts Postgres, Materialize, simulator, mz-http, and React frontend
+```
+
+See the [demo architecture doc](./demo/ARCHITECTURE.md) for the full system design.
+
 ## Quick Start
 
 ### 1. Build
