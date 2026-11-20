@@ -21,7 +21,10 @@ use tower_http::services::ServeDir;
 use crate::config::ResolvedConnection;
 use crate::error::MzTimestamp;
 use crate::store::{ChangeEvent, Store, ViewStore};
-use crate::subscribe::{MzSubscriber, SubscribeEvent};
+use materialize_sdk::Event as SdkEvent;
+
+use crate::pipeline::frontier_timestamp;
+use crate::subscribe::{key_change, MzSubscriber, ViewChange};
 
 // ---------------------------------------------------------------------------
 // Webhook registry
@@ -464,29 +467,42 @@ struct MzSnapshot {
 }
 
 /// Connect to Materialize and read the snapshot phase of a SUBSCRIBE.
-/// Returns the snapshot key-values and the progress timestamp.
+/// Returns the snapshot key-values and the frontier that closed it.
 async fn fetch_mz_snapshot(
     conn: &ResolvedConnection,
     view_name: &str,
 ) -> Result<MzSnapshot, crate::error::Error> {
     tracing::info!(view = %view_name, "fetching Mz snapshot for stale client");
-    let (mut sub, _, _) = MzSubscriber::connect(conn, None).await?;
+    let (mut sub, _, _) = MzSubscriber::connect(conn).await?;
     let mut keys: HashMap<String, String> = HashMap::new();
 
-    let snap_ts = 'snapshot: loop {
-        let events = sub.recv().await?;
-        for event in events {
-            match event {
-                SubscribeEvent::Upsert { key, value } => {
+    // The snapshot can arrive as chunks. The batch marked as the snapshot
+    // completes it and carries its frontier.
+    let snap_ts = loop {
+        let (updates, closed) = match sub.next().await? {
+            Some(SdkEvent::SnapshotChunk { updates }) => (updates, None),
+            Some(SdkEvent::Batch(batch)) => {
+                let closed = batch.is_snapshot().then(|| frontier_timestamp(batch.upper()));
+                (batch.into_updates(), closed)
+            }
+            None => {
+                return Err(crate::error::Error::Subscribe(
+                    "the stream ended before the snapshot completed".into(),
+                ));
+            }
+        };
+        for update in updates {
+            match key_change(update)? {
+                ViewChange::Upsert { key, value } => {
                     keys.insert(key, value);
                 }
-                SubscribeEvent::Delete { key } => {
+                ViewChange::Delete { key } => {
                     keys.remove(&key);
                 }
-                SubscribeEvent::Progress(ts) => {
-                    break 'snapshot ts;
-                }
             }
+        }
+        if let Some(ts) = closed {
+            break ts;
         }
     };
 

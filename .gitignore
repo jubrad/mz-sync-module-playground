@@ -1,4 +1,5 @@
 config.yaml
+!demo/config.yaml
 .env
 .env.*
 node_modules/

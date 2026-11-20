@@ -30,6 +30,8 @@ interface ViewState {
   ready: boolean
   connected: boolean
   refCount: number
+  /** Keys delivered to sinks and not deleted since. Used to reconcile a re-snapshot. */
+  keys: Set<string>
   stream: MzViewStream | null
   abortController: AbortController | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
@@ -49,6 +51,8 @@ interface ViewState {
  * - Progress cursor tracking per view
  * - Reconnection with exponential backoff
  * - Snapshot vs changelog catchup decisions
+ * - Reconciling a re-snapshot: when a transport can only reconnect with a
+ *   full snapshot, keys absent from it are delivered as deletes
  * - Ref-counted view lifecycle
  */
 export class MzSubscribeClient {
@@ -93,6 +97,7 @@ export class MzSubscribeClient {
       ready: false,
       connected: false,
       refCount: 1,
+      keys: new Set(),
       stream: null,
       abortController: null,
       reconnectTimer: null,
@@ -195,6 +200,27 @@ export class MzSubscribeClient {
       const accumulator = new BatchAccumulator(state.view)
       if (!state.ready) accumulator.setSnapshotMode(true)
 
+      // Seal what has accumulated and deliver it. `fullState` means the
+      // accumulated events are the view's full contents, so every key we
+      // hold that is not among them was deleted while we were not listening.
+      const flush = async (timestamp: MzTimestamp, kind?: MzBatch['kind'], fullState = false) => {
+        if (!accumulator.hasPending && !(fullState && state.keys.size > 0)) {
+          state.progress = timestamp
+          return
+        }
+        const batch = accumulator.seal(timestamp, kind)
+        if (fullState) {
+          for (const key of state.keys) {
+            if (!batch.upserts.has(key)) batch.deletes.add(key)
+          }
+        }
+        for (const key of batch.upserts.keys()) state.keys.add(key)
+        for (const key of batch.deletes) state.keys.delete(key)
+        state.progress = timestamp
+        if (state.generation !== generation) return
+        await this.deliverBatch(batch)
+      }
+
       for await (const event of stream.events) {
         if (abort.signal.aborted || state.generation !== generation) break
 
@@ -205,39 +231,16 @@ export class MzSubscribeClient {
             break
 
           case 'progress':
-            if (accumulator.hasPending) {
-              const batch = accumulator.seal(event.timestamp)
-              state.progress = event.timestamp
-              if (state.generation !== generation) break
-              await this.deliverBatch(batch)
-            } else {
-              state.progress = event.timestamp
-            }
+            await flush(event.timestamp)
             break
 
           case 'snapshot_complete':
-            if (accumulator.hasPending) {
-              const batch = accumulator.seal(event.timestamp, 'snapshot')
-              state.progress = event.timestamp
-              if (state.generation !== generation) break
-              await this.deliverBatch(batch)
-            } else {
-              // W3: advance progress even when accumulator has no pending events
-              state.progress = event.timestamp
-            }
+            await flush(event.timestamp, 'snapshot', true)
             state.ready = true
             break
 
           case 'catchup_complete':
-            if (accumulator.hasPending) {
-              const batch = accumulator.seal(event.timestamp, 'catchup')
-              state.progress = event.timestamp
-              if (state.generation !== generation) break
-              await this.deliverBatch(batch)
-            } else {
-              // W3: advance progress even when accumulator has no pending events
-              state.progress = event.timestamp
-            }
+            await flush(event.timestamp, 'catchup', event.mode === 'snapshot')
             state.ready = true
             break
 

@@ -456,4 +456,105 @@ describe('MzSubscribeClient', () => {
 
     client.destroy()
   })
+
+  /** A transport whose Nth connection yields the Nth list of events, then closes (or hangs on the last). */
+  function scriptedTransport(connections: MzEvent[][]): MzTransportProvider {
+    let call = 0
+    return {
+      connect() {
+        const events = connections[Math.min(call, connections.length - 1)]
+        const last = call >= connections.length - 1
+        call++
+        let resolver: (() => void) | null = null
+        return {
+          events: {
+            async *[Symbol.asyncIterator]() {
+              yield* events
+              if (last) await new Promise<void>((r) => { resolver = r })
+            },
+          },
+          close() { resolver?.() },
+        }
+      },
+    }
+  }
+
+  it('a re-snapshot after reconnect deletes keys missing from it', async () => {
+    const transport = scriptedTransport([
+      [
+        { type: 'upsert', key: 'a', value: { v: 1 } },
+        { type: 'upsert', key: 'b', value: { v: 1 } },
+        { type: 'snapshot_complete', timestamp: 500 },
+      ],
+      [
+        { type: 'upsert', key: 'a', value: { v: 2 } },
+        { type: 'snapshot_complete', timestamp: 900 },
+      ],
+    ])
+    const client = new MzSubscribeClient({ transport, reconnectMs: 10 })
+    const sink = collectingSink()
+    client.addSink(sink)
+    client.addView('v')
+    await new Promise((r) => setTimeout(r, 300))
+
+    expect(sink.batches).toHaveLength(2)
+    expect([...sink.batches[0].deletes]).toEqual([])
+    expect(sink.batches[1].kind).toBe('snapshot')
+    expect(sink.batches[1].upserts.get('a')).toEqual({ v: 2 })
+    expect([...sink.batches[1].deletes]).toEqual(['b'])
+
+    client.destroy()
+  })
+
+  it('an empty re-snapshot deletes every held key', async () => {
+    const transport = scriptedTransport([
+      [
+        { type: 'upsert', key: 'a', value: { v: 1 } },
+        { type: 'snapshot_complete', timestamp: 500 },
+      ],
+      [{ type: 'snapshot_complete', timestamp: 900 }],
+    ])
+    const client = new MzSubscribeClient({ transport, reconnectMs: 10 })
+    const sink = collectingSink()
+    client.addSink(sink)
+    client.addView('v')
+    await new Promise((r) => setTimeout(r, 300))
+
+    expect(sink.batches).toHaveLength(2)
+    expect([...sink.batches[1].deletes]).toEqual(['a'])
+    expect(client.getView('v')!.progress).toBe(900)
+
+    client.destroy()
+  })
+
+  it('a catchup in snapshot mode reconciles, a changelog catchup does not', async () => {
+    const transport = scriptedTransport([
+      [
+        { type: 'upsert', key: 'a', value: { v: 1 } },
+        { type: 'upsert', key: 'b', value: { v: 1 } },
+        { type: 'upsert', key: 'c', value: { v: 1 } },
+        { type: 'snapshot_complete', timestamp: 500 },
+      ],
+      [
+        { type: 'upsert', key: 'a', value: { v: 2 } },
+        { type: 'catchup_complete', timestamp: 700, mode: 'changelog' },
+      ],
+      [
+        { type: 'upsert', key: 'a', value: { v: 3 } },
+        { type: 'upsert', key: 'b', value: { v: 3 } },
+        { type: 'catchup_complete', timestamp: 900, mode: 'snapshot' },
+      ],
+    ])
+    const client = new MzSubscribeClient({ transport, reconnectMs: 10 })
+    const sink = collectingSink()
+    client.addSink(sink)
+    client.addView('v')
+    await new Promise((r) => setTimeout(r, 400))
+
+    expect(sink.batches).toHaveLength(3)
+    expect([...sink.batches[1].deletes]).toEqual([])
+    expect([...sink.batches[2].deletes]).toEqual(['c'])
+
+    client.destroy()
+  })
 })

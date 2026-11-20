@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { MzDirectTransport } from '../src/direct-transport.js'
-import { quoteIdent, buildSubscribeSQL } from '../src/direct-stream.js'
+import { quoteIdent, buildSubscribeSQL, snapshotBoundary } from '../src/direct-stream.js'
 
 describe('MzDirectTransport', () => {
   const opts = {
@@ -82,7 +82,6 @@ describe('buildSubscribeSQL', () => {
   it('quotes the cluster name', () => {
     const sql = buildSubscribeSQL(
       { sql: 'SELECT * FROM orders', keyColumn: 'id' },
-      {},
       'my_cluster',
     )
     expect(sql).toContain('SET CLUSTER = "my_cluster"')
@@ -91,7 +90,6 @@ describe('buildSubscribeSQL', () => {
   it('quotes cluster names with special characters', () => {
     const sql = buildSubscribeSQL(
       { sql: 'SELECT * FROM orders', keyColumn: 'id' },
-      {},
       'evil"; DROP TABLE --',
     )
     expect(sql).toContain('SET CLUSTER = "evil""; DROP TABLE --"')
@@ -100,7 +98,6 @@ describe('buildSubscribeSQL', () => {
   it('quotes the key column', () => {
     const sql = buildSubscribeSQL(
       { sql: 'SELECT * FROM orders', keyColumn: 'order_id' },
-      {},
     )
     expect(sql).toContain('KEY ("order_id")')
   })
@@ -108,7 +105,6 @@ describe('buildSubscribeSQL', () => {
   it('quotes key columns with special characters', () => {
     const sql = buildSubscribeSQL(
       { sql: 'SELECT * FROM orders', keyColumn: 'my"col' },
-      {},
     )
     expect(sql).toContain('KEY ("my""col")')
   })
@@ -116,62 +112,46 @@ describe('buildSubscribeSQL', () => {
   it('defaults key column to "key"', () => {
     const sql = buildSubscribeSQL(
       { sql: 'SELECT * FROM orders' },
-      {},
     )
     expect(sql).toContain('KEY ("key")')
   })
 
-  it('includes SNAPSHOT when since is not set', () => {
+  it('always takes a full snapshot and never uses AS OF', () => {
     const sql = buildSubscribeSQL(
       { sql: 'SELECT * FROM orders', keyColumn: 'id' },
-      {},
     )
-    expect(sql).toContain('WITH (SNAPSHOT, PROGRESS)')
-  })
-
-  it('uses AS OF when since > 0', () => {
-    const sql = buildSubscribeSQL(
-      { sql: 'SELECT * FROM orders', keyColumn: 'id' },
-      { since: 12345 },
-    )
-    expect(sql).toContain('AS OF 12345')
-    expect(sql).not.toContain('SNAPSHOT')
-  })
-
-  it('rejects non-safe-integer AS OF values', () => {
-    expect(() =>
-      buildSubscribeSQL(
-        { sql: 'SELECT * FROM orders', keyColumn: 'id' },
-        { since: 1.5 },
-      ),
-    ).toThrow('Invalid since timestamp')
-  })
-
-  it('NaN since is treated as no since (falls through to snapshot path)', () => {
-    const sql = buildSubscribeSQL(
-      { sql: 'SELECT * FROM orders', keyColumn: 'id' },
-      { since: NaN },
-    )
-    // NaN is falsy, so it takes the snapshot path — no AS OF in the SQL
     expect(sql).toContain('WITH (SNAPSHOT, PROGRESS)')
     expect(sql).not.toContain('AS OF')
   })
+})
 
-  it('rejects Infinity AS OF values', () => {
-    expect(() =>
-      buildSubscribeSQL(
-        { sql: 'SELECT * FROM orders', keyColumn: 'id' },
-        { since: Infinity },
-      ),
-    ).toThrow('Invalid since timestamp')
+describe('snapshotBoundary', () => {
+  it('drops the leading progress row and ends the snapshot once progress passes it', () => {
+    const boundary = snapshotBoundary()
+    const upsert = { type: 'upsert' as const, key: 'a', value: {}, timestamp: 100 }
+
+    expect(boundary({ type: 'progress', timestamp: 100 })).toBeNull()
+    expect(boundary(upsert)).toBe(upsert)
+    expect(boundary({ type: 'progress', timestamp: 101 })).toEqual({
+      type: 'snapshot_complete',
+      timestamp: 101,
+    })
+    expect(boundary({ type: 'progress', timestamp: 102 })).toEqual({
+      type: 'progress',
+      timestamp: 102,
+    })
   })
 
-  it('rejects too-large AS OF values', () => {
-    expect(() =>
-      buildSubscribeSQL(
-        { sql: 'SELECT * FROM orders', keyColumn: 'id' },
-        { since: Number.MAX_SAFE_INTEGER + 1 },
-      ),
-    ).toThrow('Invalid since timestamp')
+  it('handles a snapshot with no leading progress row', () => {
+    const boundary = snapshotBoundary()
+    boundary({ type: 'upsert', key: 'a', value: {}, timestamp: 100 })
+    expect(boundary({ type: 'progress', timestamp: 100 })).toBeNull()
+    expect(boundary({ type: 'progress', timestamp: 101 })?.type).toBe('snapshot_complete')
+  })
+
+  it('completes an empty snapshot', () => {
+    const boundary = snapshotBoundary()
+    expect(boundary({ type: 'progress', timestamp: 100 })).toBeNull()
+    expect(boundary({ type: 'progress', timestamp: 101 })?.type).toBe('snapshot_complete')
   })
 })

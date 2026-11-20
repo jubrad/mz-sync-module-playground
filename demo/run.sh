@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 PIDS=()
 cleanup() {
     echo "--- shutting down ---"
-    for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
+    for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
     docker compose down -v 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -15,7 +15,13 @@ trap 'exit 0' INT TERM
 echo "==> Building mz-http..."
 (cd .. && cargo build --release 2>&1)
 
-# ── 2. Build frontend ──────────────────────────────────────────
+# ── 2a. Build @mz-web packages (dependency order) ───────────────
+echo "==> Building @mz-web packages..."
+for p in subscribe transport-http sink-sqlite sqlite-wasm react; do
+    (cd ../packages/$p && npm install --silent && npm run build 2>&1)
+done
+
+# ── 2b. Build frontend ──────────────────────────────────────────
 echo "==> Building React frontend..."
 (cd ../frontend && npm install --silent && npm run build 2>&1)
 cp -r ../frontend/dist/* ../static/ 2>/dev/null || true

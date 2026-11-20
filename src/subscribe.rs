@@ -1,37 +1,26 @@
-use tokio_postgres::SimpleQueryMessage;
-use tracing::{debug, info};
+use materialize_sdk::core::Envelope;
+use materialize_sdk::{Change, Event, LiveOptions, LiveSubscription, Row, Subscribe, Update};
+use tokio_postgres::tls::MakeTlsConnect;
+use tokio_postgres::{SimpleQueryMessage, Socket};
+use tracing::info;
 
 use crate::config::ResolvedConnection;
-use crate::error::{Error, MzTimestamp};
+use crate::error::Error;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/// A change to one key of a view.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SubscribeEvent {
+pub enum ViewChange {
     Upsert { key: String, value: String },
     Delete { key: String },
-    Progress(MzTimestamp),
 }
 
 // ---------------------------------------------------------------------------
 // SQL helpers
 // ---------------------------------------------------------------------------
-
-/// Build the DECLARE CURSOR for SUBSCRIBE with ENVELOPE UPSERT.
-/// `key_col` is the column name used as the upsert key.
-fn build_subscribe_sql(sql: &str, key_col: &str, as_of: Option<MzTimestamp>) -> String {
-    let quoted_key = format!("\"{}\"", key_col);
-    match as_of {
-        Some(ts) => format!(
-            "DECLARE c CURSOR FOR SUBSCRIBE ({sql}) WITH (PROGRESS) AS OF {ts} ENVELOPE UPSERT (KEY ({quoted_key}))"
-        ),
-        None => format!(
-            "DECLARE c CURSOR FOR SUBSCRIBE ({sql}) WITH (SNAPSHOT, PROGRESS) ENVELOPE UPSERT (KEY ({quoted_key}))"
-        ),
-    }
-}
 
 use crate::store::ColumnInfo;
 
@@ -97,185 +86,163 @@ fn resolve_sql(original: &str, columns: &[String], key_col: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Row parsing
+// Decoding
 // ---------------------------------------------------------------------------
 
-pub fn parse_subscribe_row(row: &tokio_postgres::SimpleQueryRow) -> Result<SubscribeEvent, Error> {
-    let mz_timestamp: MzTimestamp = row
-        .get(0)
-        .ok_or_else(|| Error::Subscribe("missing mz_timestamp".into()))?
-        .parse()
-        .map_err(|e| Error::Subscribe(format!("invalid mz_timestamp: {e}")))?;
+/// The single cell of a one-column key or value.
+fn cell(row: Row, what: &str) -> Result<String, Error> {
+    row.into_iter()
+        .next()
+        .flatten()
+        .ok_or_else(|| Error::Subscribe(format!("{what} is NULL")))
+}
 
-    let mz_progressed = row
-        .get(1)
-        .ok_or_else(|| Error::Subscribe("missing mz_progressed".into()))?;
+/// Turns an update of the `key`/`value` subscription into a [`ViewChange`].
+pub fn key_change(update: Update) -> Result<ViewChange, Error> {
+    match update.change {
+        Change::Upsert { key, value } => Ok(ViewChange::Upsert {
+            key: cell(key, "key")?,
+            value: cell(value, "value")?,
+        }),
+        Change::Delete { key } => Ok(ViewChange::Delete {
+            key: cell(key, "key")?,
+        }),
+        Change::KeyViolation { key } => Err(Error::Subscribe(format!(
+            "key {:?} is not unique in the view; set key_column to a unique column",
+            key.into_iter().next().flatten()
+        ))),
+        Change::Diff { .. } => Err(Error::Subscribe(
+            "got a diff update from an upsert subscription".into(),
+        )),
+    }
+}
 
-    if mz_progressed == "t" {
-        return Ok(SubscribeEvent::Progress(mz_timestamp));
+// ---------------------------------------------------------------------------
+// Connection settings
+// ---------------------------------------------------------------------------
+
+/// Escapes a value for the `options` connection parameter, where a space
+/// separates settings and a backslash escapes the next character.
+fn escape_option(value: &str) -> String {
+    value.replace('\\', "\\\\").replace(' ', "\\ ")
+}
+
+/// The connection settings for a view.
+///
+/// The SDK's subscription owns its session, so session settings (cluster,
+/// schema, and any session variables) travel in the `options` parameter
+/// instead of `SET` statements.
+fn pg_config(conn: &ResolvedConnection) -> tokio_postgres::Config {
+    let mut options = vec!["--welcome_message=off".to_string()];
+    if let Some(cluster) = &conn.cluster {
+        options.push(format!("--cluster={}", escape_option(cluster)));
+    }
+    if let Some(schema) = &conn.schema {
+        options.push(format!("--search_path={}", escape_option(schema)));
+    }
+    let mut variables: Vec<_> = conn.session_variables.iter().collect();
+    variables.sort();
+    for (name, value) in variables {
+        options.push(format!("--{name}={}", escape_option(value)));
     }
 
-    let mz_state = row
-        .get(2)
-        .ok_or_else(|| Error::Subscribe("missing mz_state for data row".into()))?;
-
-    let key = row
-        .get(3)
-        .ok_or_else(|| Error::Subscribe("missing key for data row".into()))?
-        .to_string();
-
-    match mz_state {
-        "upsert" => {
-            let value = row
-                .get(4)
-                .ok_or_else(|| Error::Subscribe("missing value for upsert".into()))?
-                .to_string();
-            Ok(SubscribeEvent::Upsert { key, value })
-        }
-        "delete" => Ok(SubscribeEvent::Delete { key }),
-        other => Err(Error::Subscribe(format!("unknown mz_state: {other}"))),
-    }
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host(&conn.host)
+        .port(conn.port)
+        .user(&conn.user)
+        .password(&conn.password)
+        .dbname(&conn.database)
+        .application_name("mz-http")
+        .options(&options.join(" "));
+    config
 }
 
 // ---------------------------------------------------------------------------
 // MzSubscriber
 // ---------------------------------------------------------------------------
 
+/// A live subscription to one view, run by the Materialize SDK.
+///
+/// The SDK owns the cursor: it fetches, checks the protocol, and releases
+/// changes as batches at closed frontiers. A view is a query, so the
+/// subscription always starts with a snapshot and cannot resume.
 pub struct MzSubscriber {
-    client: tokio_postgres::Client,
-    fetch_size: u32,
-    _connection_handle: tokio::task::JoinHandle<()>,
+    live: LiveSubscription,
 }
 
 impl MzSubscriber {
     pub async fn connect(
         conn: &ResolvedConnection,
-        as_of: Option<MzTimestamp>,
     ) -> Result<(Self, Vec<ColumnInfo>, String), Error> {
-        let connstr = format!(
-            "host={} port={} user={} password={} dbname={} application_name=mz-http options=--welcome_message=off",
-            conn.host, conn.port, conn.user, conn.password, conn.database
-        );
-
-        let (client, handle) = if conn.tls {
-            let tls_connector = native_tls::TlsConnector::new()?;
-            let connector = postgres_native_tls::MakeTlsConnector::new(tls_connector);
-            let (client, connection) = tokio_postgres::connect(&connstr, connector).await?;
-            let handle = tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    tracing::error!(error = %e, "materialize connection lost");
-                }
-            });
-            (client, handle)
+        let config = pg_config(conn);
+        if conn.tls {
+            let tls = postgres_native_tls::MakeTlsConnector::new(native_tls::TlsConnector::new()?);
+            Self::connect_with(conn, &config, tls).await
         } else {
-            let (client, connection) =
-                tokio_postgres::connect(&connstr, tokio_postgres::NoTls).await?;
-            let handle = tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    tracing::error!(error = %e, "materialize connection lost");
-                }
-            });
-            (client, handle)
-        };
-
-        // Log connection metadata.
-        let rows = client
-            .simple_query(
-                "SELECT mz_environment_id(), current_database(), current_schema(), current_role()",
-            )
-            .await?;
-        for msg in &rows {
-            if let SimpleQueryMessage::Row(row) = msg {
-                info!(
-                    env = row.get(0).unwrap_or("?"),
-                    db = row.get(1).unwrap_or("?"),
-                    schema = row.get(2).unwrap_or("?"),
-                    role = row.get(3).unwrap_or("?"),
-                    "connected to Materialize"
-                );
-            }
+            Self::connect_with(conn, &config, tokio_postgres::NoTls).await
         }
-
-        // Optional cluster override.
-        if let Some(cluster) = &conn.cluster {
-            client
-                .simple_query(&format!("SET CLUSTER = {cluster}"))
-                .await?;
-            info!(cluster = %cluster, "set cluster");
-        }
-
-        // Optional schema override.
-        if let Some(schema) = &conn.schema {
-            client
-                .simple_query(&format!("SET search_path = '{schema}'"))
-                .await?;
-        }
-
-        // Arbitrary session variables.
-        for (k, v) in &conn.session_variables {
-            client
-                .simple_query(&format!("SET {k} = '{v}'"))
-                .await?;
-            debug!(var = %k, val = %v, "set session variable");
-        }
-
-        // Probe columns, pick key, resolve SQL.
-        let column_info = probe_columns(&client, &conn.sql).await?;
-        let col_names: Vec<String> = column_info.iter().map(|c| c.name.clone()).collect();
-        let key_col = pick_key_column(&col_names, conn.key_column.as_deref())?;
-        let effective_sql = resolve_sql(&conn.sql, &col_names, key_col);
-
-        info!(
-            columns = ?col_names,
-            key_column = %key_col,
-            wrapped = (effective_sql != conn.sql),
-            "resolved view schema"
-        );
-
-        // Open the subscribe cursor.
-        let subscribe_sql = build_subscribe_sql(&effective_sql, "key", as_of);
-        info!(sql = %subscribe_sql, "starting subscribe");
-
-        client.simple_query("BEGIN").await?;
-        client.simple_query(&subscribe_sql).await?;
-
-        Ok((
-            Self {
-                client,
-                fetch_size: conn.fetch_size,
-                _connection_handle: handle,
-            },
-            column_info,
-            key_col.to_string(),
-        ))
     }
 
-    pub async fn recv(&mut self) -> Result<Vec<SubscribeEvent>, Error> {
-        let fetch_sql = format!("FETCH {} c", self.fetch_size);
-        let messages = self.client.simple_query(&fetch_sql).await.map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("is not valid for all inputs") {
-                let ts = msg
-                    .split("Timestamp (")
-                    .nth(1)
-                    .and_then(|s| s.split(')').next())
-                    .and_then(|s| s.parse::<MzTimestamp>().ok())
-                    .unwrap_or(0);
-                Error::TimestampCompacted(ts)
-            } else {
-                Error::Materialize(e)
+    async fn connect_with<T>(
+        conn: &ResolvedConnection,
+        config: &tokio_postgres::Config,
+        tls: T,
+    ) -> Result<(Self, Vec<ColumnInfo>, String), Error>
+    where
+        T: MakeTlsConnect<Socket> + Clone,
+        T::Stream: Send + 'static,
+    {
+        // Probe the view's columns on a short-lived session of its own.
+        let (column_info, key_col, effective_sql) = {
+            let (client, connection) = config.connect(tls.clone()).await?;
+            let handle = tokio::spawn(connection);
+            let rows = client
+                .simple_query(
+                    "SELECT mz_environment_id(), current_database(), current_schema(), current_role(), mz_catalog.mz_version()",
+                )
+                .await?;
+            for msg in &rows {
+                if let SimpleQueryMessage::Row(row) = msg {
+                    info!(
+                        env = row.get(0).unwrap_or("?"),
+                        db = row.get(1).unwrap_or("?"),
+                        schema = row.get(2).unwrap_or("?"),
+                        role = row.get(3).unwrap_or("?"),
+                        version = row.get(4).unwrap_or("?"),
+                        "connected to Materialize"
+                    );
+                }
             }
-        })?;
+            let sql = conn.sql.trim().trim_end_matches(';').trim_end();
+            let column_info = probe_columns(&client, sql).await?;
+            let col_names: Vec<String> = column_info.iter().map(|c| c.name.clone()).collect();
+            let key_col = pick_key_column(&col_names, conn.key_column.as_deref())?.to_string();
+            let effective_sql = resolve_sql(sql, &col_names, &key_col);
+            info!(
+                columns = ?col_names,
+                key_column = %key_col,
+                wrapped = (effective_sql != sql),
+                "resolved view schema"
+            );
+            drop(client);
+            let _ = handle.await;
+            (column_info, key_col, effective_sql)
+        };
 
-        let mut events = Vec::new();
-        for msg in messages {
-            if let SimpleQueryMessage::Row(row) = msg {
-                events.push(parse_subscribe_row(&row)?);
-            }
-        }
+        let subscribe = Subscribe::query(effective_sql).with_envelope(Envelope::Upsert {
+            key: vec!["key".into()],
+        });
+        let options = LiveOptions::default().max_rows(u64::from(conn.fetch_size));
+        info!("starting subscribe");
+        let live = LiveSubscription::connect(config, tls, subscribe, options).await?;
 
-        debug!(count = events.len(), "fetched events");
-        Ok(events)
+        Ok((Self { live }, column_info, key_col))
+    }
+
+    /// The next event, or `None` once the stream has ended.
+    pub async fn next(&mut self) -> Result<Option<Event>, Error> {
+        self.live.next().await.transpose().map_err(Error::from)
     }
 }
 
@@ -327,9 +294,53 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_sql_quotes_key() {
-        let sql = build_subscribe_sql("SELECT key, value FROM mv", "key", None);
-        assert!(sql.contains("KEY (\"key\")"));
-        assert!(sql.contains("SNAPSHOT"));
+    fn options_carry_session_settings() {
+        let mut conn = crate::config::ResolvedConnection {
+            host: "h".into(),
+            port: 6875,
+            user: "u".into(),
+            password: "p".into(),
+            database: "materialize".into(),
+            cluster: Some("serving".into()),
+            schema: Some("my schema".into()),
+            tls: false,
+            fetch_size: 100,
+            key_column: None,
+            title_columns: vec![],
+            session_variables: Default::default(),
+            sql: "SELECT 1".into(),
+        };
+        conn.session_variables
+            .insert("statement_timeout".into(), "5s".into());
+        let config = pg_config(&conn);
+        assert_eq!(
+            config.get_options(),
+            Some("--welcome_message=off --cluster=serving --search_path=my\\ schema --statement_timeout=5s")
+        );
+    }
+
+    #[test]
+    fn key_change_decodes_upserts_and_deletes() {
+        let upsert = Update {
+            timestamp: 1,
+            change: Change::Upsert {
+                key: vec![Some("a".into())],
+                value: vec![Some("{}".into())],
+            },
+        };
+        assert_eq!(
+            key_change(upsert).unwrap(),
+            ViewChange::Upsert { key: "a".into(), value: "{}".into() }
+        );
+        let delete = Update {
+            timestamp: 1,
+            change: Change::Delete { key: vec![Some("a".into())] },
+        };
+        assert_eq!(key_change(delete).unwrap(), ViewChange::Delete { key: "a".into() });
+        let violation = Update {
+            timestamp: 1,
+            change: Change::KeyViolation { key: vec![Some("a".into())] },
+        };
+        assert!(key_change(violation).is_err());
     }
 }

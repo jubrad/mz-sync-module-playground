@@ -6,8 +6,14 @@ export type MzEvent =
   | { type: 'upsert'; key: string; value: Record<string, unknown> | string; timestamp?: MzTimestamp }
   | { type: 'delete'; key: string; timestamp?: MzTimestamp }
   | { type: 'progress'; timestamp: MzTimestamp }
+  /** The events before this were the view's full contents. */
   | { type: 'snapshot_complete'; timestamp: MzTimestamp }
-  | { type: 'catchup_complete'; timestamp: MzTimestamp }
+  /**
+   * Catchup finished. `mode: 'snapshot'` means the events before it were the
+   * view's full contents (the source could not replay changes), so keys held
+   * locally that were not among them no longer exist.
+   */
+  | { type: 'catchup_complete'; timestamp: MzTimestamp; mode?: 'changelog' | 'snapshot' }
   | { type: 'lagged' }
 
 /**
@@ -29,7 +35,11 @@ export interface MzBatch {
   view: string
   /** Key → value for rows that were inserted or updated. */
   upserts: Map<string, Record<string, unknown>>
-  /** Keys that were deleted. */
+  /**
+   * Keys that were deleted. After a reconnect that had to take a full
+   * snapshot, this includes keys that were held locally and are absent from
+   * the snapshot.
+   */
   deletes: Set<string>
   /** Progress timestamp that sealed this batch. */
   progress: MzTimestamp

@@ -52,9 +52,11 @@ Materialize's WebSocket API returns rows as arrays: `[mz_timestamp, mz_progresse
 
 The value object is built from the column metadata received in the `Rows` message.
 
-### 4. AS OF for Reconnection
+### 4. Full Snapshot on Reconnection
 
-When the subscribe client reconnects with a `since` timestamp, the transport sends `AS OF <timestamp>` in the SUBSCRIBE query. This tells MZ to resume from that point instead of sending a full snapshot.
+The transport ignores the subscribe client's `since` timestamp and always sends `WITH (SNAPSHOT, PROGRESS)`. The subscribed SQL is a query, and resuming a query with `AS OF` rehydrates its dataflow and needs retained history on every input, so there is nothing cheaper to fall back on. An earlier version sent `AS OF <timestamp>` with the default `SNAPSHOT`, which re-sent every row but never the deletes that happened while disconnected.
+
+The snapshot rows all carry the stream's first timestamp, and a progress row at that timestamp can precede them. The transport drops progress rows until one passes that timestamp and emits it as `snapshot_complete`. The subscribe client then deletes any key it holds that the snapshot did not contain.
 
 ### 5. One Connection Per View
 

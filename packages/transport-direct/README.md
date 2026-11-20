@@ -46,7 +46,11 @@ Each `connect()` call:
 4. Parses Row messages into `MzEvent` objects (upsert/delete/progress)
 5. Yields them as an `AsyncIterable`
 
-On reconnect (handled by the subscribe client), if the view has a progress timestamp, it sends `AS OF <timestamp>` to resume from where it left off.
+### Limitation: every reconnect is a full snapshot
+
+A view's SQL is subscribed to as a query (`SUBSCRIBE (<sql>)`), and Materialize cannot resume a subscription to a query from a timestamp without rebuilding its dataflow and holding history on every input. So this transport never sends `AS OF`. After any break in the connection it takes a full snapshot again and ends it with `snapshot_complete`.
+
+The subscribe client reconciles that snapshot against the keys it already delivered: rows that changed arrive as upserts, and keys missing from the snapshot arrive as deletes in the same batch. Sinks stay correct, at the cost of re-reading the whole result on each reconnect, so keep directly subscribed results small or put large ones behind mz-http.
 
 ## Options
 

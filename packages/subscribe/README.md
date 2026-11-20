@@ -87,7 +87,9 @@ Built-in sinks:
 
 ### Progress Tracking & Reconnection
 
-The client tracks the last progress timestamp per view. On reconnect, it sends `?since=<timestamp>` for efficient changelog catchup. If the server has compacted past that point, it falls back to a full snapshot.
+The client tracks the last progress timestamp per view. On reconnect, it passes that timestamp to the transport as `since`. `@mz-web/transport-http` uses it for changelog catchup (`?since=<timestamp>`) and falls back to a full snapshot if the server has compacted past that point. `@mz-web/transport-direct` cannot resume a query and always takes a full snapshot.
+
+Whenever a reconnect ends in a full snapshot (`snapshot_complete`, or `catchup_complete` with `mode: 'snapshot'`), the client compares it with the keys it has already delivered and adds the missing ones to the batch's `deletes`, so sinks drop rows that were deleted while disconnected. The client keeps the set of live keys per view in memory to do this.
 
 Reconnection uses exponential backoff (default 2s → max 60s).
 

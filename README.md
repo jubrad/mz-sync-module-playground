@@ -315,6 +315,22 @@ Each view gets:
 - **Changelog** ring buffer (100k entries) for reconnection catchup
 - **broadcast channel** feeding SSE, WebSocket, and webhook consumers
 
+## Materialize SDK
+
+The server consumes `SUBSCRIBE` through the [Materialize SDK](https://github.com/MaterializeInc/materialize/tree/main/misc/materialize-sdk)'s Rust package (`LiveSubscription`). The SDK owns the cursor, checks the protocol, and releases changes as batches at closed frontiers; mz-http wraps each view's SQL into `key`/`value`, applies the batches to its store, and reconnects.
+
+The SDK is unreleased. `Cargo.toml` pins a commit from its draft pull request stack (MaterializeInc/materialize#40807 to #40820), so the first build clones the Materialize repository, and the pin needs bumping as those PRs change. The TypeScript packages under `packages/` do not use the SDK yet: its Node package runs over `pg` and has no browser or WebSocket transport.
+
+## Limitations
+
+**A break in the Materialize connection costs a full snapshot.** Every view is subscribed to as a query (`SUBSCRIBE (<sql>)`, usually wrapped to produce `key`/`value`), and a subscription to a query cannot be resumed from a timestamp. When the connection drops, mz-http reconnects with a fresh snapshot instead of `AS OF`:
+
+- The store keeps serving its previous contents until the new snapshot is complete, then applies it.
+- Keys missing from the new snapshot are deleted and broadcast as `delete` events, so connected clients and changelog replays (`?since=`) converge.
+- Rows that did not change are re-sent as upserts. A view with a large result pays for the whole result on every reconnect.
+
+Clients of mz-http are not affected in the same way: they resume from the changelog, and only fall back to a snapshot when it has been compacted.
+
 ## Logging
 
 ```bash

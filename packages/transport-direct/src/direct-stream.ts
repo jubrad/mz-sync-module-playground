@@ -54,10 +54,13 @@ export function quoteIdent(name: string): string {
 
 /**
  * Build the SUBSCRIBE SQL for a view with ENVELOPE UPSERT.
+ *
+ * The subscription always starts with a full snapshot. The view's SQL is a
+ * query, and a subscription to a query cannot be resumed from a timestamp,
+ * so there is no `AS OF` form.
  */
 export function buildSubscribeSQL(
   config: ViewSubscribeConfig,
-  opts: ConnectOpts,
   cluster?: string,
 ): string {
   const parts: string[] = []
@@ -69,15 +72,7 @@ export function buildSubscribeSQL(
   const keyCol = config.keyColumn ?? 'key'
   const sql = config.sql
 
-  if (opts.since && opts.since > 0) {
-    // C4: Validate AS OF value
-    if (!Number.isSafeInteger(opts.since)) {
-      throw new Error('Invalid since timestamp')
-    }
-    parts.push(`SUBSCRIBE (${sql}) WITH (PROGRESS) AS OF ${opts.since} ENVELOPE UPSERT (KEY (${quoteIdent(keyCol)}))`)
-  } else {
-    parts.push(`SUBSCRIBE (${sql}) WITH (SNAPSHOT, PROGRESS) ENVELOPE UPSERT (KEY (${quoteIdent(keyCol)}))`)
-  }
+  parts.push(`SUBSCRIBE (${sql}) WITH (SNAPSHOT, PROGRESS) ENVELOPE UPSERT (KEY (${quoteIdent(keyCol)}))`)
 
   // Join with semicolons for multi-statement simple query
   return parts.join('; ')
@@ -132,20 +127,49 @@ export function parseSubscribeRow(
 }
 
 /**
+ * Tracks where the initial snapshot of a SUBSCRIBE ends.
+ *
+ * The snapshot rows all carry the stream's first timestamp, and a progress
+ * row at that timestamp can arrive before them. The snapshot is complete at
+ * the first progress row past it, which becomes `snapshot_complete`. Progress
+ * rows before that are dropped.
+ */
+export function snapshotBoundary(): (event: MzEvent) => MzEvent | null {
+  let asOf: MzTimestamp | null = null
+  let inSnapshot = true
+
+  return (event) => {
+    if (event.type !== 'progress') {
+      if (asOf === null && 'timestamp' in event && event.timestamp !== undefined) {
+        asOf = event.timestamp
+      }
+      return event
+    }
+    if (!inSnapshot) return event
+    if (asOf === null) asOf = event.timestamp
+    if (event.timestamp <= asOf) return null
+    inSnapshot = false
+    return { type: 'snapshot_complete', timestamp: event.timestamp }
+  }
+}
+
+/**
  * Create a direct WebSocket stream to Materialize for a single SUBSCRIBE.
+ *
+ * `connectOpts.since` is ignored: every connection takes a full snapshot and
+ * ends it with `snapshot_complete`, which the subscribe client reconciles
+ * against the keys it already holds.
  */
 export function createDirectStream(
   transportOpts: MzDirectTransportOpts,
   viewConfig: ViewSubscribeConfig,
-  connectOpts: ConnectOpts,
+  _connectOpts: ConnectOpts,
 ): MzViewStream {
   const queue = new AsyncQueue<MzEvent>()
   let ws: WebSocket | null = null
   let columns: MzColumnInfo[] = []
   let authenticated = false
-  // W3: When reconnecting with since > 0, we are not in snapshot mode
-  let inSnapshot = !(connectOpts.since && connectOpts.since > 0)
-  let firstProgress = true
+  const boundary = snapshotBoundary()
 
   const proto = (transportOpts.tls ?? true) ? 'wss' : 'ws'
   const url = `${proto}://${transportOpts.host}/api/experimental/sql`
@@ -179,7 +203,7 @@ export function createDirectStream(
         if (!authenticated) {
           // Auth complete — send SUBSCRIBE
           authenticated = true
-          const sql = buildSubscribeSQL(viewConfig, connectOpts, transportOpts.cluster)
+          const sql = buildSubscribeSQL(viewConfig, transportOpts.cluster)
           ws!.send(JSON.stringify({ query: sql }))
         }
         break
@@ -190,25 +214,9 @@ export function createDirectStream(
         break
 
       case 'Row': {
-        const event = parseSubscribeRow(msg.payload, columns)
-        if (event) {
-          // W2: Emit snapshot_complete INSTEAD of the progress event when in snapshot
-          if (event.type === 'progress' && inSnapshot) {
-            inSnapshot = false
-            firstProgress = false
-            queue.push({ type: 'snapshot_complete', timestamp: event.timestamp })
-          } else if (event.type === 'progress' && firstProgress) {
-            firstProgress = false
-            // W3: For catchup (since > 0), emit catchup_complete on first progress
-            if (connectOpts.since && connectOpts.since > 0) {
-              queue.push({ type: 'catchup_complete', timestamp: event.timestamp })
-            } else {
-              queue.push(event)
-            }
-          } else {
-            queue.push(event)
-          }
-        }
+        const parsed = parseSubscribeRow(msg.payload, columns)
+        const event = parsed && boundary(parsed)
+        if (event) queue.push(event)
         break
       }
 

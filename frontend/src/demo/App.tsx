@@ -99,11 +99,16 @@ function Dashboard() {
   }, [allStores, search])
 
   // Keyboard navigation
+  // Arrows work from the search box or the list; Tab/Shift+Tab only from the list
+  // so Tab out of the search box still moves focus normally.
+  const listRef = useRef<HTMLDivElement>(null)
   const handleSidebarKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const tabInList = e.key === 'Tab' && e.target === listRef.current
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || tabInList) {
       e.preventDefault()
+      const forward = e.key === 'ArrowDown' || (tabInList && !e.shiftKey)
       const idx = filteredStores.findIndex((s: any) => s.id === selectedStoreId)
-      const next = e.key === 'ArrowDown'
+      const next = forward
         ? Math.min(idx + 1, filteredStores.length - 1)
         : Math.max(idx - 1, -1)
       setSelectedStoreId(next >= 0 ? filteredStores[next].id : null)
@@ -112,6 +117,10 @@ function Dashboard() {
       setSearch('')
     }
   }, [filteredStores, selectedStoreId])
+
+  useEffect(() => {
+    listRef.current?.querySelector('[data-selected="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, [selectedStoreId])
 
   // ── Header controls ────────────────────────────────
   const [opening, setOpening] = useState(false)
@@ -170,11 +179,15 @@ function Dashboard() {
     [], ['live_orders'],
   ) ?? 0
 
-  // Orders/sec — computed locally from created_at timestamps
+  // Orders/sec — computed locally from created_at timestamps, over the 5
+  // seconds before the newest order we hold. Measuring back from the data
+  // instead of the wall clock keeps the rate meaningful while the stream lags
+  // (the Freshness indicator shows the lag itself).
+  const recentWindow = `"created_at" > datetime((SELECT substr(max("created_at"), 1, 19) FROM live_orders), '-5 seconds')`
   const ordersPerSec = useLiveQueryScalar<number>(
     hasStore
-      ? `SELECT count(*) FROM live_orders WHERE "store_id" = ${selectedStoreId} AND "created_at" > datetime('now', '-5 seconds')`
-      : `SELECT count(*) FROM live_orders WHERE "created_at" > datetime('now', '-5 seconds')`,
+      ? `SELECT count(*) FROM live_orders WHERE "store_id" = ${selectedStoreId} AND ${recentWindow}`
+      : `SELECT count(*) FROM live_orders WHERE ${recentWindow}`,
     [], ['live_orders'],
   )
   const ordersPerSecDisplay = ((ordersPerSec ?? 0) / 5).toFixed(1)
@@ -274,13 +287,12 @@ function Dashboard() {
       {/* ── Body: sidebar + main ───────────────────────── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Sidebar */}
-        <div style={{ width: 280, flexShrink: 0, background: '#fff', borderRight: '1px solid #dee2e6', display: 'flex', flexDirection: 'column' }}>
+        <div onKeyDown={handleSidebarKeyDown} style={{ width: 280, flexShrink: 0, background: '#fff', borderRight: '1px solid #dee2e6', display: 'flex', flexDirection: 'column' }}>
           <div style={{ padding: '12px 12px 8px' }}>
             <input
               ref={searchRef}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={handleSidebarKeyDown}
               placeholder="Search stores..."
               style={{
                 width: '100%', padding: '8px 12px', border: '1px solid #dee2e6', borderRadius: 8,
@@ -303,13 +315,14 @@ function Dashboard() {
             All Stores ({allStores.length})
           </div>
           {/* Store list */}
-          <div style={{ flex: 1, overflow: 'auto' }}>
+          <div ref={listRef} tabIndex={0} style={{ flex: 1, overflow: 'auto', outline: 'none' }}>
             {filteredStores.map((s: any) => {
               const active = Number(s.active_orders) || 0
               const isSelected = s.id === selectedStoreId
               return (
                 <div
                   key={s.id}
+                  data-selected={isSelected}
                   onClick={() => setSelectedStoreId(s.id)}
                   style={{
                     padding: '8px 16px', cursor: 'pointer',

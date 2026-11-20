@@ -11,11 +11,11 @@ pub enum Error {
     #[error("materialize error: {0}")]
     Materialize(#[from] tokio_postgres::Error),
 
+    #[error("subscription error: {0}")]
+    Sdk(#[from] materialize_sdk::Error),
+
     #[error("subscribe error: {0}")]
     Subscribe(String),
-
-    #[error("timestamp {0} has been compacted; will restart with full snapshot")]
-    TimestampCompacted(MzTimestamp),
 
     #[error("TLS error: {0}")]
     Tls(#[from] native_tls::Error),

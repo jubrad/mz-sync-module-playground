@@ -12,6 +12,10 @@ clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 hex = "0.4"
 hmac = "0.12"
+# The Materialize SDK is unreleased. This pins the top of the draft PR stack
+# (MaterializeInc/materialize#40807 through #40820, head of #40820). Bump the
+# rev as the stack moves, and switch to a release once one exists.
+materialize-sdk = { git = "https://github.com/MaterializeInc/materialize", rev = "35e42310c0660e5bc2e646ce7834b7dab18dc472" }
 native-tls = "0.2"
 parking_lot = "0.12"
 postgres-native-tls = "0.5"

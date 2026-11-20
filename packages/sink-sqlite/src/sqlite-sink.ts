@@ -136,6 +136,8 @@ export class MzSqliteSink implements MzSink {
     totalCommits: number
     totalQueries: number
     version: number
+    /** Size of the database in bytes (pages × page size), or 0 if unknown. */
+    dbSizeBytes: number
   }> {
     const tables: { name: string; rows: number }[] = []
     for (const [name, state] of this.tables) {
@@ -147,8 +149,17 @@ export class MzSqliteSink implements MzSink {
         tables.push({ name, rows: 0 })
       }
     }
+    let dbSizeBytes = 0
+    try {
+      const pages = await this.db.query<{ page_count: number }>('PRAGMA page_count')
+      const size = await this.db.query<{ page_size: number }>('PRAGMA page_size')
+      dbSizeBytes = (pages[0]?.page_count ?? 0) * (size[0]?.page_size ?? 0)
+    } catch {
+      // Not every SqliteExec exposes pragmas as queries.
+    }
     return {
       tables,
+      dbSizeBytes,
       totalWrites: this._totalWrites,
       totalCommits: this._totalCommits,
       totalQueries: this._totalQueries,

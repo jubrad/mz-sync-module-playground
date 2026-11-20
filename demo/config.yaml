@@ -1,0 +1,39 @@
+# mz-http config for the Slice Command demo (run.sh).
+# Materialize runs in docker compose with its SQL port mapped to 6878.
+
+server:
+  bind: "0.0.0.0:8080"
+
+defaults:
+  host: localhost
+  port: 6878
+  user: materialize
+  password: ""
+  database: materialize
+  tls: false
+  fetch_size: 1024
+
+# One entry per materialized view in setup.sql; the React dashboard
+# (frontend/src/demo/App.tsx) subscribes to all of them.
+views:
+  - name: store_dashboard
+    sql: "SELECT * FROM store_dashboard"
+    key_column: id
+  - name: top_sellers
+    sql: "SELECT * FROM top_sellers"
+    key_column: items
+  - name: slow_orders_by_store
+    sql: "SELECT * FROM slow_orders_by_store"
+    key_column: store_id
+  - name: slow_orders
+    sql: "SELECT * FROM slow_orders"
+    key_column: id
+  - name: live_orders
+    sql: "SELECT * FROM live_orders"
+    key_column: id
+  - name: recent_deliveries
+    sql: "SELECT * FROM recent_deliveries"
+    key_column: id
+  - name: driver_board
+    sql: "SELECT * FROM driver_board"
+    key_column: id
